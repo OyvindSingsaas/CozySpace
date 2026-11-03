@@ -42,7 +42,7 @@ const HOME = {
   MARS: ['MRO', 'MVN', 'M20', 'MSL', 'ODY', 'TGO', 'MEX', 'EMM', 'M01O'],
   JUP:  ['JNO'],
   L1:   ['SOHO', 'ACE', 'WIND', 'DSCO', 'IMAP', 'AL1', 'SWFO', 'CARR'],
-  L2:   ['JWST', 'EUCL', 'GAIA', 'SPHX', 'PLAT'],
+  L2:   ['JWST', 'EUCL', 'GAIA', 'SPHX', 'PLAT', 'RST'],
   EARTH:['MMS1', 'MMS2', 'MMS3', 'MMS4', 'CHDR', 'TESS', 'GTL', 'XMM', 'IBEX', 'TDR', 'NSYT'],
 };
 const NOT_CRAFT = new Set(['DSN', 'DSS', '']);        // maintenance / testing placeholders in the feed
@@ -261,7 +261,7 @@ function sky(t, s) {
     MMS2: { kind: 'craft', lam: ls + 140, d: 1.2e5 },
     SOHO: { kind: 'craft', lam: ls, d: 1.5e6 }, ACE: { kind: 'craft', lam: ls, d: 1.5e6 }, WIND: { kind: 'craft', lam: ls, d: 1.5e6 },
     JWST: { kind: 'craft', lam: le, d: 1.5e6 },
-    ESCG: { kind: 'craft', lam: ls + 120, d: 6e6 },
+    ESCG: { kind: 'craft', lam: ls + 120, d: 6e6 }, ESCB: { kind: 'craft', lam: ls + 124, d: 6e6 },   // ESCAPADE Gold & Blue
     SPP:  { kind: 'craft', ...helioToGeo(le + 150, 0.5, ls) },
     STA:  { kind: 'craft', ...helioToGeo(le + 70, 0.96, ls) },
     VGR1: { kind: 'craft', lam: 255.5, d: 25.902e9 + days * 1.5e6 },
