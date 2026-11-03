@@ -660,6 +660,67 @@ function paintGlobe(p, path, s, sunAng, sec) {
   ctx = MAIN;
 }
 
+// ======================= planets with character =======================
+const PLANET_LOOK = {
+  MERC:  { r: 2.6, base: '#aaa39b' },
+  VENUS: { r: 3.8, base: '#f2e2b6' },
+  MARS:  { r: 3.6, base: '#d8653d' },
+  JUP:   { r: 6.2, base: '#dcbf93' },
+  SAT:   { r: 5.0, base: '#e5d19f' },
+  URA:   { r: 4.0, base: '#a8e1e7' },
+  NEP:   { r: 4.0, base: '#4f78df' },
+  PLU:   { r: 2.8, base: '#b9c8da' },
+};
+function drawPlanet(k, x, y, lit, sun) {
+  const L = PLANET_LOOK[k]; if (!L) return;
+  const r = L.r;
+  const ring = (front) => {                      // Saturn's rings, back half before the globe, front half after
+    ctx.save(); ctx.translate(x, y); ctx.rotate(-0.38);
+    for (const [rx, a, w] of [[2.25, .75, 1.3], [1.75, .55, 1.1]]) {
+      ctx.strokeStyle = `rgba(232,214,170,${a})`; ctx.lineWidth = w;
+      ctx.beginPath(); ctx.ellipse(0, 0, r * rx, r * rx * 0.3, 0, front ? 0 : Math.PI, front ? Math.PI : 2 * Math.PI); ctx.stroke();
+    }
+    ctx.restore();
+  };
+  glow(x, y, r * 4, '255,232,205', 0.1);
+  if (k === 'SAT') ring(false);
+  if (k === 'URA') { ctx.strokeStyle = 'rgba(200,240,245,0.35)'; ctx.lineWidth = 0.6; ctx.beginPath(); ctx.ellipse(x, y, r * 0.45, r * 1.7, 0.1, 0, 6.283); ctx.stroke(); }
+  ctx.save(); ctx.beginPath(); ctx.arc(x, y, r, 0, 6.283); ctx.clip();
+  ctx.fillStyle = L.base; ctx.fillRect(x - r, y - r, 2 * r, 2 * r);
+  const band = (dy, h, col) => { ctx.fillStyle = col; ctx.fillRect(x - r, y + dy * r, 2 * r, h * r); };
+  const blob = (dx, dy, rr, col, sx = 1, sy = 1) => { ctx.fillStyle = col; ctx.beginPath(); ctx.ellipse(x + dx * r, y + dy * r, rr * r * sx, rr * r * sy, 0, 0, 6.283); ctx.fill(); };
+  if (k === 'MERC') { blob(-.3, -.2, .22, 'rgba(90,85,80,.45)'); blob(.35, .3, .16, 'rgba(90,85,80,.4)'); blob(.1, -.5, .12, 'rgba(255,255,255,.3)'); }
+  if (k === 'VENUS') { band(-.35, .18, 'rgba(255,250,230,.45)'); band(.15, .22, 'rgba(215,190,140,.35)'); }
+  if (k === 'MARS') { blob(.1, .05, .42, 'rgba(120,45,30,.55)', 1.3, .7); blob(0, -.95, .38, 'rgba(255,250,245,.95)', 1.4, .6); blob(-.4, .45, .25, 'rgba(240,150,100,.5)'); }
+  if (k === 'JUP') { for (const [dy, h, c] of [[-.75, .2, 'rgba(170,125,85,.6)'], [-.35, .22, 'rgba(160,110,70,.75)'], [.05, .12, 'rgba(240,225,200,.7)'],
+                                                [.2, .22, 'rgba(165,115,75,.7)'], [.6, .18, 'rgba(180,140,100,.5)']]) band(dy, h, c);
+                     blob(.35, .32, .2, 'rgba(195,85,60,.95)', 1.5, .9); }
+  if (k === 'SAT') { band(-.5, .2, 'rgba(200,170,110,.45)'); band(.1, .16, 'rgba(205,175,115,.4)'); }
+  if (k === 'NEP') { band(-.2, .16, 'rgba(120,160,240,.6)'); blob(-.3, .25, .2, 'rgba(25,40,110,.8)', 1.4, .8); blob(-.05, .5, .1, 'rgba(240,245,255,.8)', 1.6, .6); }
+  if (k === 'PLU') { blob(.15, .15, .4, 'rgba(250,250,255,.9)'); blob(-.25, -.05, .3, 'rgba(250,250,255,.85)'); blob(-.5, -.35, .4, 'rgba(120,135,160,.45)'); }   // the heart
+  // phase: the night side, cut by an offset disc on the side away from the Sun
+  const off = 2 * r * lit;
+  ctx.fillStyle = 'rgba(10,12,32,0.82)'; ctx.beginPath(); ctx.arc(x - sun[0] * off, y - sun[1] * off, r * 1.02, 0, 6.283); ctx.fill();
+  ctx.restore();
+  if (k === 'SAT') ring(true);
+}
+
+// the ISS, in its iconic shape: a long truss with four pairs of golden solar wings, modules and radiators in the middle
+function drawISS(x, y, ang, lit) {
+  ctx.save(); ctx.translate(x, y); ctx.rotate(ang); ctx.scale(1.15, 1.15);
+  const a = lit ? 1 : 0.45;
+  ctx.globalAlpha = a;
+  ctx.fillStyle = '#d9a03c'; ctx.strokeStyle = 'rgba(90,55,20,0.6)'; ctx.lineWidth = 0.25;
+  for (const sx of [-10.5, -7.5, 7.5, 10.5]) for (const sy of [-1, 1]) {          // 8 solar array wings
+    ctx.fillRect(sx - 1.15, sy > 0 ? 1.2 : -8.2, 2.3, 7); ctx.strokeRect(sx - 1.15, sy > 0 ? 1.2 : -8.2, 2.3, 7);
+  }
+  ctx.fillStyle = '#e9ebf3'; ctx.fillRect(-12, -0.6, 24, 1.2);                     // integrated truss
+  ctx.fillStyle = '#f6f7fb'; ctx.fillRect(-0.9, -4.5, 1.8, 9);                    // pressurized modules, along the flight path
+  ctx.fillRect(-2.6, -1.1, 5.2, 2.2);
+  ctx.fillStyle = '#c9d3e6'; ctx.fillRect(-4.6, 1.6, 1.6, 3.2); ctx.fillRect(3, 1.6, 1.6, 3.2);   // radiators
+  ctx.restore();
+}
+
 // ======================= frame =======================
 function frame() {
   if (document.hidden) { setTimeout(frame, 1000); return; }      // asleep while nobody can see it
@@ -789,12 +850,13 @@ function frame() {
       const P = lift(now0.ll, now0.h);
       if (P.vis) {
         const lit = d3.geoDistance([s.lon, s.lat], now0.ll) / RAD < 90 + Math.acos(6371 / (6371 + now0.h)) / RAD;   // out of Earth's shadow?
-        if (lit) glow(P.x, P.y, 9, '255,245,220', 0.55 + 0.25 * Math.sin(sec * 2));
-        ctx.fillStyle = lit ? '#fff6e4' : 'rgba(150,165,200,0.8)';
-        ctx.fillRect(P.x - 3.2, P.y - 0.6, 6.4, 1.2); ctx.fillRect(P.x - 0.9, P.y - 1.3, 1.8, 2.6);   // a tiny truss and module
+        if (lit) glow(P.x, P.y, 16, '255,240,210', 0.35 + 0.15 * Math.sin(sec * 2));
+        const q1 = issAt(t - 20000), P1 = q1 && lift(q1.ll, q1.h);                 // direction of flight on screen
+        const heading = P1 ? Math.atan2(P.y - P1.y, P.x - P1.x) : 0;
+        drawISS(P.x, P.y, heading + Math.PI / 2, lit);                                         // modules along the flight path, truss across it
         const ux = P.x - cx, uy = P.y - cy, ul = Math.hypot(ux, uy) || 1;
         ctx.font = FONT(10); ctx.fillStyle = 'rgba(225,226,245,0.8)'; ctx.textAlign = ux < 0 ? 'right' : 'left';
-        ctx.fillText('ISS', P.x + ux / ul * 10 + (ux < 0 ? -4 : 4), P.y + uy / ul * 10 + 3); ctx.textAlign = 'left';
+        ctx.fillText('ISS', P.x + ux / ul * 20 + (ux < 0 ? -4 : 4), P.y + uy / ul * 20 + 3); ctx.textAlign = 'left';
       }
     }
   }
@@ -903,11 +965,14 @@ function frame() {
       dot(x + sx / sl * 2 * r * (1 - k), y + sy / sl * 2 * r * (1 - k), r, '#e9e4d2'); ctx.restore();
       labels.push({ x, y, r: 8, name: 'moon', sub: lightTime(v.d), main: true });
     } else if (v.kind === 'planet') {
-      glow(x, y, v.r * 4, '255,230,200', 0.12);
-      if (v.ring) { ctx.strokeStyle = 'rgba(230,210,160,0.7)'; ctx.lineWidth = 1;
-        ctx.beginPath(); ctx.ellipse(x, y, v.r * 2.1, v.r * 0.7, -0.35, 0, 6.283); ctx.stroke(); }
-      dot(x, y, v.r, v.col);
-      labels.push({ x, y, r: v.r + 3, name: v.label, sub: lightTime(v.d), main: true });
+      // phase from the Sun–planet–Earth triangle: helio distance r, geo distance Δ, Earth–Sun 1 AU
+      const Pv = [v.d * Math.cos(v.lam * RAD), v.d * Math.sin(v.lam * RAD)], Sv = [AU * Math.cos(s.lam * RAD), AU * Math.sin(s.lam * RAD)];
+      const rh = Math.hypot(Pv[0] - Sv[0], Pv[1] - Sv[1]), cosI = (rh * rh + v.d * v.d - AU * AU) / (2 * rh * v.d);
+      const lit = (1 + Math.max(-1, Math.min(1, cosI))) / 2;
+      const sd = [pos.SUN[0] - x, pos.SUN[1] - y], sl = Math.hypot(...sd) || 1;
+      drawPlanet(k, x, y, lit, [sd[0] / sl, sd[1] / sl]);
+      const PR = PLANET_LOOK[k]?.r || v.r;
+      labels.push({ x, y, r: PR * (k === 'SAT' ? 2.2 : 1) + 3, name: v.label, sub: lightTime(v.d), main: true });
     } else {
       const on = linked.has(k);
       if (on) glow(x, y, 9, '255,214,170', 0.3);
