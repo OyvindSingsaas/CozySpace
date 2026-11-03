@@ -106,6 +106,34 @@ function issAt(t) {                               // -> [lon, lat], km altitude
   return { ll: [satellite.degreesLong(g.longitude), satellite.degreesLat(g.latitude)], h: g.height };
 }
 
+// ======================= rocket launches =======================
+// Launch Library 2 (The Space Devs): recent + upcoming launches with exact time and pad. polled every 30 min
+// (the free API allows 15 calls an hour). a launch is shown from lift-off until ~9 min later, about when a
+// real rocket reaches orbit, then it vanishes in a small pulse.
+let LAUNCHES = [];
+const ASCENT_S = 540;
+async function pollLaunches() {
+  if (document.hidden) { setTimeout(pollLaunches, 30000); return; }
+  try {
+    const j = await (await fetch('https://ll.thespacedevs.com/2.3.0/launches/upcoming/?limit=15&mode=normal&hide_recent_previous=false')).json();
+    LAUNCHES = (j.results || []).filter(x => x.pad && x.pad.latitude != null).map(x => {
+      const [rocket, mission] = x.name.split('|').map(z => z.trim());
+      return { id: x.id, t0: Date.parse(x.net), status: x.status?.abbrev || '', precise: ['Second', 'Minute'].includes(x.net_precision?.name),
+               rocket, mission: mission || '', where: x.pad.location?.name?.split(',').slice(-1)[0].trim() || '',
+               ll: [+x.pad.longitude, +x.pad.latitude], polar: ['PO', 'SSO'].includes(x.mission?.orbit?.abbrev) };
+    });
+  } catch (e) { /* keep what we have */ }
+  setTimeout(pollLaunches, 30 * 60 * 1000);
+}
+function initLaunches() {                       // called once everything is defined
+  if (params.has('launch')) {                    // ?launch : a demo launch from Cape Canaveral, lifting off 5 s after load
+    LAUNCHES = [{ id: 'demo', t0: now() + 5000, status: 'Go', precise: true, rocket: 'Falcon 9', mission: 'demo', where: 'Florida',
+                  ll: [-80.6, 28.6], polar: false }];
+  } else pollLaunches();
+}
+const LAUNCHED = new Set();
+const launchShown = L => (L.precise || L.status === 'Success') && !['TBD', 'TBC', 'Hold'].includes(L.status);
+
 // ======================= live DSN feed =======================
 let DISHES = SNAP, FRIENDLY = {}, FEED = { live: false, at: null };
 const LINKS = new Map();                       // 'dish|target' -> link, eased in and out as the feed changes
@@ -1081,6 +1109,50 @@ function frame() {
     if (F && F.on && F.lvl >= 3) { const sa2 = sunAng * RAD;
       glow(cx + 0.45 * R * Math.cos(sa2), cy - 0.45 * R * Math.sin(sa2), R * 1.3, '255,225,180', 0.3 * F.strength * (0.85 + 0.15 * Math.sin(sec * 5))); } }
 
+  // ---- launches: a little rocket climbing from the real pad, arcing downrange, vanishing at orbit in a pulse.
+  // altitude is drawn 5× exaggerated so the climb is visible (the ISS stays at true scale)
+  {
+    const rotL = d3.geoRotation(p.rotate());
+    const liftL = (ll, h) => { const [l, f] = rotL(ll).map(v => v * RAD), x = Math.cos(f) * Math.sin(l), y = Math.sin(f), z = Math.cos(f) * Math.cos(l), k = 1 + h / 6371;
+      return { x: cx + R * k * x, y: cy - R * k * y, vis: z > 0 || Math.hypot(x, y) * k > 1 }; };
+    const at = (L, tau) => { const az = L.polar ? 180 : 90, g = dest(L.ll, az, 16 * tau ** 1.7);  // ~1 800 km downrange by orbit
+      return liftL(g, 5 * 210 * tau ** 0.8); };
+    for (const L of LAUNCHES) {
+      if (!launchShown(L)) continue;
+      const age = (t - L.t0) / 1000;
+      if (age < -2 || age > ASCENT_S + 40) continue;
+      const tau = Math.max(0, Math.min(1, age / ASCENT_S));
+      if (age >= 0 && age <= ASCENT_S) {
+        // exhaust trail from the pad to here, fading behind the rocket
+        let prev = null;
+        for (let i = 0; i <= 24; i++) { const P = at(L, tau * i / 24);
+          if (prev && P.vis && prev.vis) { ctx.strokeStyle = `rgba(220,230,255,${0.08 + 0.4 * (i / 24) ** 2})`; ctx.lineWidth = 0.6 + 1.2 * i / 24;
+            ctx.beginPath(); ctx.moveTo(prev.x, prev.y); ctx.lineTo(P.x, P.y); ctx.stroke(); }
+          prev = P; }
+        const P = at(L, tau), P0 = at(L, Math.max(0, tau - 0.01));
+        if (P.vis) {
+          const dir = Math.atan2(P.y - P0.y, P.x - P0.x), fl = 0.7 + 0.3 * Math.sin(sec * 31) * Math.sin(sec * 17);
+          if (age < 4) glow(at(L, 0).x, at(L, 0).y, 10 * (1 - age / 4), '255,220,170', 0.7);                    // lift-off flash
+          glow(P.x - Math.cos(dir) * 2, P.y - Math.sin(dir) * 2, 5 + 2 * fl, '255,170,80', 0.6 * fl);            // flame
+          ctx.save(); ctx.translate(P.x, P.y); ctx.rotate(dir);
+          ctx.fillStyle = '#f4f6fb'; ctx.beginPath(); ctx.moveTo(3.2, 0); ctx.lineTo(-2.2, -0.8); ctx.lineTo(-2.2, 0.8); ctx.closePath(); ctx.fill();
+          ctx.fillStyle = `rgba(255,190,90,${fl})`; ctx.beginPath(); ctx.moveTo(-2.2, -0.5); ctx.lineTo(-4.5 - 2 * fl, 0); ctx.lineTo(-2.2, 0.5); ctx.closePath(); ctx.fill();
+          ctx.restore();
+        }
+      } else if (age > ASCENT_S) {                                  // in orbit: the trail fades out
+        const P = at(L, 1);
+        if (!LAUNCHED.has(L.id) && P.vis) RIPPLES.push({ kind: 'orbit', at: [P.x, P.y], t0: sec - (age - ASCENT_S) });
+        LAUNCHED.add(L.id);
+        const fade = 1 - (age - ASCENT_S) / 40;
+        let prev = null;
+        for (let i = 0; i <= 24; i++) { const Q = at(L, i / 24);
+          if (prev && Q.vis && prev.vis) { ctx.strokeStyle = `rgba(220,230,255,${(0.08 + 0.3 * (i / 24) ** 2) * fade})`; ctx.lineWidth = 0.8;
+            ctx.beginPath(); ctx.moveTo(prev.x, prev.y); ctx.lineTo(Q.x, Q.y); ctx.stroke(); }
+          prev = Q; }
+      }
+    }
+  }
+
   // ---- the ISS, at its real position and (true-scale) altitude, with the last few minutes of its orbit behind it
   {
     const rot = d3.geoRotation(p.rotate());
@@ -1217,9 +1289,9 @@ function frame() {
   for (let i = RIPPLES.length - 1; i >= 0; i--) {
     const e = RIPPLES[i], tau = sec - e.t0;
     if (tau > 4) { RIPPLES.splice(i, 1); continue; }
-    const rgb = e.kind === 'start' ? '255,205,150' : e.kind === 'slew' ? '225,230,255' : e.kind === 'flare' ? '255,180,110' : '150,175,230';
+    const rgb = e.kind === 'start' ? '255,205,150' : e.kind === 'slew' ? '225,230,255' : e.kind === 'flare' ? '255,180,110' : e.kind === 'orbit' ? '235,240,255' : '150,175,230';
     const home = e.dish && dishPos[e.dish] ? dishPos[e.dish] : stPos[e.station] && !stPos[e.station].hidden ? stPos[e.station].pt : null;
-    const spots = [e.target ? pos[e.target] : null, home];
+    const spots = e.at ? [e.at] : [e.target ? pos[e.target] : null, home];
     for (const P of spots) {
       if (!P) continue;
       for (const lag of [0, 0.7, 1.4]) {
@@ -1315,7 +1387,10 @@ function frame() {
   if (v) { const dn = v.signals.find(x => x.dir === 'down');
     ctx.fillText(`${v.station.toLowerCase()} is ${dn ? 'listening to' : 'calling'} ${nameOf(v.target).toLowerCase()}${dn ? ` · ${dn.rate} bit/s` : ''}`, 32, 78); }
   { const F = flareState(sec);
-    if (F && F.on && F.lvl >= 1) { ctx.fillStyle = 'rgba(255,200,150,0.75)'; ctx.fillText(`a ${F.cls} solar flare is under way`, 32, v ? 96 : 78); } }
+    let ly = v ? 96 : 78;
+    if (F && F.on && F.lvl >= 1) { ctx.fillStyle = 'rgba(255,200,150,0.75)'; ctx.fillText(`a ${F.cls} solar flare is under way`, 32, ly); ly += 18; }
+    const up = LAUNCHES.find(L => launchShown(L) && t >= L.t0 && t <= L.t0 + ASCENT_S * 1000);
+    if (up) { ctx.fillStyle = 'rgba(220,230,255,0.7)'; ctx.fillText(`a ${up.rocket} is climbing to orbit from ${up.where.toLowerCase()}${up.mission ? ' · ' + up.mission : ''}`, 32, ly); } }
 
   // ---- hover: names for the natural world
   if (MOUSE.on) {
@@ -1344,6 +1419,7 @@ const MOUSE = { x: 0, y: 0, on: false };
 addEventListener('mousemove', e => { MOUSE.x = e.clientX; MOUSE.y = e.clientY; MOUSE.on = true; });
 document.addEventListener('mouseleave', () => { MOUSE.on = false; });
 addEventListener('resize', resize); resize();
+initLaunches();
 frame();
 </script>
 </body>
