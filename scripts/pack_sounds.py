@@ -14,6 +14,7 @@ CLIPS = {
     "mars": ("mars.wav", "Sound on Mars, recorded by Perseverance's SuperCam microphone. NASA/JPL-Caltech/LANL/CNES/CNRS/ISAE-SUPAERO"),
     "moonStep": ("moon.mp3", "Apollo 11: Neil Armstrong, 'That's one small step for man...' (NASA, 20 July 1969)"),
     "perseus": ("sonify5_perseus.mp3", "Sonification of the supermassive black hole in the Perseus galaxy cluster. NASA/CXC/SAO/K. Arcand, M. Russo & A. Santaguida. CC BY-NC 3.0"),
+    "heartbeat": ("Footsteps, Heartbeat, Laughter.wav", "Voyager Golden Record, 'Sounds of Earth': footsteps, heartbeat, laughter (NASA/JPL, 1977)"),
     # "whale": ("Whales.wav", "Voyager Golden Record: humpback whale song (Roger Payne recordings)"),
 }
 

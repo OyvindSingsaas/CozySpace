@@ -1050,9 +1050,9 @@ function drawArecibo(sec) {
 // panned to where the object is and set in a soft reverb. off until the speaker button is pressed
 // (browsers only allow sound after a click); the choice is remembered.
 const AUDIO = { ctx: null, on: false, buffers: {}, last: {}, turn: {}, playing: null };
-const OBJECT_SOUNDS = { VGR1: ['motherChild'], VGR2: ['whale'], SGRA: ['perseus'], MOON: ['moonStep'], MARS: ['mars'] };   // one each; Voyager 2 is silent until a whale clip is added   // alternate between these
+const OBJECT_SOUNDS = { VGR1: ['motherChild'], VGR2: ['heartbeat', 'whale'], SGRA: ['perseus'], MOON: ['moonStep'], MARS: ['mars'] };   // missing clips are skipped; several alternate
 const CLIP_GAIN = { perseus: 0.6, mars: 0.85 };                   // level-match the clips
-const CLIP_TITLES = { motherChild: 'golden record · kiss, mother and child', whale: 'golden record · humpback whales',
+const CLIP_TITLES = { motherChild: 'golden record · kiss, mother and child', heartbeat: 'golden record · footsteps, heartbeat, laughter', whale: 'golden record · humpback whales',
   perseus: 'the black hole in the perseus cluster, as sound · NASA/CXC/SAO',
   mars: 'sound on mars · perseverance\'s microphone', moonStep: 'apollo 11 · one small step, 20 july 1969',
   marconi: 'marconi, 12 dec 1901 · the letter S in morse ( · · · ), re-created' };
