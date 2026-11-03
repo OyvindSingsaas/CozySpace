@@ -232,34 +232,49 @@ function sky(t, s) {
 const cv = document.getElementById('c'), MAIN = cv.getContext('2d');
 let ctx = MAIN;                                 // swapped while painting cached layers
 let W, H, R, cx, cy, DPR;
-const WEDGE = [3, 52];                          // screen angles for the sky (deg, ccw from +x)
 let R0, RMAX, BACKDROP, STARS = [], EXOTIC = {};
 function resize() {
   DPR = Math.min(devicePixelRatio || 1, 2);
   W = innerWidth; H = innerHeight;
   cv.width = W * DPR; cv.height = H * DPR;
-  R = Math.min(H * 0.2, W * 0.15);
-  cx = 64 + R + W * 0.02; cy = H - 64 - R - H * 0.03;
-  R0 = R + 36;
+  R = Math.min(H * 0.12, W * 0.09);             // Earth in the middle, a little smaller
+  cx = W / 2; cy = H / 2;
+  R0 = R + 30;
   RMAX = Infinity;                              // one radius for all directions: isotropic log scale
-  for (let th = WEDGE[0]; th <= WEDGE[1]; th++) RMAX = Math.min(RMAX, edgeDist(th));
+  for (let th = 0; th < 360; th += 2) RMAX = Math.min(RMAX, edgeDist(th));
   buildBackdrop();
 }
 
-const wedgeFrac = (lam, ls) => mod(lam - (ls - 15), 360) / 360;
-function spreadAngles(S, ls) {                  // 40% true angle + 60% rank: order kept, clumps opened
-  const ks = Object.keys(S).sort((a, b) => wedgeFrac(S[a].lam, ls) - wedgeFrac(S[b].lam, ls) || S[a].d - S[b].d);
-  const out = {};
-  ks.forEach((k, i) => out[k] = WEDGE[0] + (WEDGE[1] - WEDGE[0]) * (0.4 * wedgeFrac(S[k].lam, ls) + 0.6 * (i + 0.5) / ks.length));
-  return out;
+// true direction: the Sun is fixed to the right (0°); everything else sits at its ecliptic longitude
+// relative to the Sun, counter-clockwise as seen from above the solar system
+const trueAngle = (lam, ls) => mod(lam - ls + 180, 360) - 180;
+function spreadAngles(S, ls) {                  // true angles, then a gentle nudge so nothing sits on top of anything else
+  const ks = Object.keys(S), th = {}, r = {};
+  for (const k of ks) { th[k] = trueAngle(S[k].lam, ls); r[k] = rOf(S[k].d); }
+  const MIN = 46, MAXDEV = 25;
+  for (let it = 0; it < 40; it++) {
+    let moved = false;
+    for (let i = 0; i < ks.length; i++) for (let j = i + 1; j < ks.length; j++) {
+      const a = ks[i], b = ks[j];
+      const [ax, ay] = polar(th[a], r[a]), [bx, by] = polar(th[b], r[b]);
+      const dd = Math.hypot(ax - bx, ay - by);
+      if (dd >= MIN) continue;
+      const push = (MIN - dd) / 2, da = mod(th[a] - th[b] + 180, 360) - 180 >= 0 ? 1 : -1;
+      th[a] += da * push / Math.max(r[a], 1) / RAD; th[b] -= da * push / Math.max(r[b], 1) / RAD; moved = true;
+    }
+    for (const k of ks) { const t0 = trueAngle(S[k].lam, ls), dv = mod(th[k] - t0 + 180, 360) - 180;
+      if (Math.abs(dv) > MAXDEV) th[k] = t0 + Math.sign(dv) * MAXDEV; }
+    if (!moved) break;
+  }
+  return th;
 }
 function edgeDist(th) {
-  const m = 80, c = Math.cos(th * RAD), s = Math.sin(th * RAD);
-  return Math.min(c > 1e-6 ? (W - m - cx) / c : 1e9, s > 1e-6 ? (cy - m) / s : 1e9);
+  const m = 70, c = Math.cos(th * RAD), s = Math.sin(th * RAD);
+  return Math.min(c > 1e-6 ? (W - m - cx) / c : c < -1e-6 ? (cx - m) / -c : 1e9, s > 1e-6 ? (cy - m) / s : s < -1e-6 ? (H - m - cy) / -s : 1e9);
 }
 function edge0(th) {                             // distance to the very screen edge
   const c = Math.cos(th * RAD), s = Math.sin(th * RAD);
-  return Math.min(c > 1e-6 ? (W - cx) / c : 1e9, s > 1e-6 ? cy / s : 1e9);
+  return Math.min(c > 1e-6 ? (W - cx) / c : c < -1e-6 ? cx / -c : 1e9, s > 1e-6 ? cy / s : s < -1e-6 ? (H - cy) / -s : 1e9);
 }
 const LIGHT_DAY = 2.5902e10;
 const LOG_D0 = Math.log10(2e5), GAMMA = 0.6;      // scale starts ~half a Moon distance out; gamma < 1 opens the inner system
@@ -349,7 +364,7 @@ function buildBackdrop(ls = sun(now()).lam) {
     const a = r() * 6.283, rr = rC + r() * 400, x = cx + rr * Math.cos(a), y = cy - rr * Math.sin(a);
     if (onScreen(x, y, -40)) bl(x, y, 12 + r() * 30, r() < 0.5 ? '255,160,120' : '255,120,150', 0.04 + r() * 0.05);
   }
-  for (let th = 40; th > -40; th -= 1) { const [x, y] = polar(th, rC + 24);
+  for (let th = 30; th > -30; th -= 1) { const [x, y] = polar(th, rC + 24);
     if (onScreen(x, y, 60)) { b.textAlign = 'right'; label(x - 18, y, 'the oldest light · cosmic microwave background', yearsText(CMB.years) + ' old', '255,190,160', [x, y], 40); b.textAlign = 'left'; break; } }
 
   // the Oort cloud: a vast, faint shell of ice
@@ -366,13 +381,19 @@ function buildBackdrop(ls = sun(now()).lam) {
     if (onScreen(x, y, 50)) break; }
 
   // deep objects: true distance; angles keep their order but are spread so labels breathe
-  const ks = DEEP.map((o, i) => i).sort((i, j) => wedgeFrac(DEEP[i].lam, ls) - wedgeFrac(DEEP[j].lam, ls));
-  ks.forEach((i, rank) => {
-    const o = DEEP[i], rr = rOf(o.d), ok = [];
-    for (let th = -60; th <= 90; th += 0.5) { const [x, y] = polar(th, rr); if (x > 40 && x < W - 170 && y > 50 && y < H - 50) ok.push(th); }
-    if (!ok.length) return;
-    const lo = ok[0], hi = ok[ok.length - 1], f = 0.4 * wedgeFrac(o.lam, ls) + 0.6 * (rank + 0.5) / DEEP.length;
-    const [x, y] = polar(lo + (hi - lo) * f, rr), yrs = yearsText(o.d / LY);
+  // deep objects: true distance and true direction, or the nearest direction where they still fit on screen
+  const fits = (th, rr) => { const [x, y] = polar(th, rr); return x > 40 && x < W - 170 && y > 50 && y < H - 50 && !(x < 420 && y < 110); };
+  const usedTh = [];
+  DEEP.forEach(o => {
+    const rr = rOf(o.d), t0 = trueAngle(o.lam, ls);
+    let th = null;
+    for (let dv = 0; dv <= 180 && th === null; dv += 1) for (const sgn of [1, -1]) {
+      const c = t0 + sgn * dv;
+      if (fits(c, rr) && !usedTh.some(([ut, ur]) => Math.hypot(...[0, 1].map(i => polar(ut, ur)[i] - polar(c, rr)[i])) < 70)) { th = c; break; }
+    }
+    if (th === null) return;
+    usedTh.push([th, rr]);
+    const [x, y] = polar(th, rr), yrs = yearsText(o.d / LY);
     if (o.kind === 'star') {
       bl(x, y, 9 * o.size, o.rgb, 0.22); b.fillStyle = `rgb(${o.rgb})`; b.beginPath(); b.arc(x, y, o.size, 0, 6.283); b.fill();
       label(x, y, o.name, yrs, o.rgb);
@@ -787,7 +808,7 @@ function frame() {
     if (sec > FIRST && tau < 11) {
       const rr = rng(1000 + ev); rr();
       const rr0 = rOf(100 * LY), rr1 = Math.min(rOf(5e4 * LY), Math.hypot(W, H));
-      const th = -20 + rr() * 70, rad = rr0 + rr() * (rr1 - rr0), [x, y] = polar(th, rad);
+      const th = rr() * 360, rad = rr0 + rr() * (rr1 - rr0), [x, y] = polar(th, rad);
       if (x > 20 && x < W - 20 && y > 20 && y < H - 20) {
         const bri = tau < 0.5 ? tau / 0.5 : Math.exp(-(tau - 0.5) / 2.4);
         glow(x, y, 8 + 34 * bri, `255,${200 - 60 * Math.min(1, tau / 6)},${170 - 70 * Math.min(1, tau / 6)}`, 0.55 * bri);
@@ -993,19 +1014,34 @@ function frame() {
   const boxes = [];
   const HOVER = [];
   for (const L of labels) if (L.main) { HOVER.push({ x: L.x, y: L.y, r: L.r + 8, name: L.name }); L.name = L.sub; L.sub = ''; }   // natural bodies: light-time only, name on hover
-  for (const L of labels.sort((a, b) => a.y - b.y)) {
-    const left = L.x > W - 200, tx = left ? L.x - L.r - 6 : L.x + L.r + 6;
-    let ly = L.y;
-    const hgt = (L.kids ? 13 : 0) + (L.sub ? 28 : 16);
-    while (boxes.some(b => ly < b.y + b.h && ly + hgt > b.y && Math.abs(b.x - tx) < 120)) ly += 4;
-    boxes.push({ x: tx, y: ly, h: hgt });
-    ctx.textAlign = left ? 'right' : 'left';
+  // each label tries right, left, below, above (then nudges further out) and takes the first spot that
+  // overlaps neither another label nor any object. labels closest to Earth are placed first.
+  const dots = labels.map(L => ({ x: L.x - L.r, y: L.y - L.r, w: 2 * L.r, h: 2 * L.r }));
+  const hit = (a, b) => a.x < b.x + b.w && a.x + a.w > b.x && a.y < b.y + b.h && a.y + a.h > b.y;
+  for (const L of labels.sort((a, b) => Math.hypot(a.x - cx, a.y - cy) - Math.hypot(b.x - cx, b.y - cy))) {
+    ctx.font = FONT(11, L.main ? 500 : 400); let w = ctx.measureText(L.name).width;
+    ctx.font = FONT(10); for (const t of [L.sub, L.kids]) if (t) w = Math.max(w, ctx.measureText(t).width);
+    const h = 13 + (L.sub ? 13 : 0) + (L.kids ? 13 : 0), g = L.r + 5;
+    const spots = [];
+    for (const push of [0, 8, 16, 26]) spots.push(
+      [L.x + g + push, L.y - 9], [L.x - g - w - push, L.y - 9],
+      [L.x - w / 2, L.y + g + push], [L.x - w / 2, L.y - g - h - push]);
+    let box = null;
+    for (const [x, y] of spots) {
+      const bb = { x, y, w, h };
+      if (x < 6 || x + w > W - 6 || y < 6 || y + h > H - 6) continue;
+      if (boxes.some(b => hit(bb, b)) || dots.some(d => hit(bb, d) && !(d.x === L.x - L.r && d.y === L.y - L.r))) continue;
+      box = bb; break;
+    }
+    if (!box) box = { x: L.x + g, y: L.y - 9, w, h };
+    boxes.push(box);
+    ctx.textAlign = 'left';
     ctx.font = FONT(11, L.main ? 500 : 400);
     ctx.fillStyle = L.main ? 'rgba(240,226,200,0.6)' : L.on ? 'rgba(225,226,245,0.8)' : 'rgba(170,175,215,0.42)';
-    ctx.fillText(L.name, tx, ly + 2);
+    ctx.fillText(L.name, box.x, box.y + 10);
     ctx.font = FONT(10); ctx.fillStyle = 'rgba(140,145,190,0.55)';
-    if (L.sub) ctx.fillText(L.sub, tx, ly + 15);
-    if (L.kids) ctx.fillText(L.kids, tx, ly + (L.sub ? 28 : 15));
+    if (L.sub) ctx.fillText(L.sub, box.x, box.y + 23);
+    if (L.kids) ctx.fillText(L.kids, box.x, box.y + (L.sub ? 36 : 23));
   }
   ctx.textAlign = 'left';
 
