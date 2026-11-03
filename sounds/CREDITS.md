@@ -10,3 +10,8 @@
 The background music is generated live in the browser (no recording).
 
 - The 1901 radio-bubble sound is generated in the page (a re-creation of Marconi's Morse "S" from a spark-gap transmitter); no recording of the original exists.
+
+## Images
+| File | Source | License |
+|---|---|---|
+| images/golden-record-engraving.png | Engraved lines extracted from NASA/JPL's photo of the Voyager Golden Record cover (images/voyager-golden-record-cover.webp) | Public domain (NASA) |

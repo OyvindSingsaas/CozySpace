@@ -1159,6 +1159,33 @@ function marconiS(C) {
   return { src: { stop: when => parts.forEach(x => { try { x.stop(when); } catch (e) {} }) }, gain: out, dur };
 }
 
+// the Golden Record's cover, engraved lines only (extracted from NASA's photo of the cover): while a Voyager's
+// clip plays, it sweeps into view beside it like a needle tracing round the record, then fades when the sound ends
+const GR_IMG = new Image(); GR_IMG.src = '../images/golden-record-engraving.png';
+const GR = { key: null, t0: 0, end: null, box: null };
+function drawGoldenRecord(sec, pos) {
+  const pl = AUDIO.playing, live = pl && (pl.key === 'VGR1' || pl.key === 'VGR2');
+  if (live && GR.key !== pl.key + pl.t0) { GR.key = pl.key + pl.t0; GR.who = pl.key; GR.t0 = sec; GR.end = null; }
+  if (!live && GR.key && GR.end === null) GR.end = sec;
+  if (!GR.key || !GR_IMG.complete || !GR_IMG.naturalWidth) return;
+  const out = GR.end === null ? 1 : Math.max(0, 1 - (sec - GR.end) / 0.8);
+  if (out <= 0) { GR.key = null; GR.box = null; return; }
+  const P = pos[GR.who]; if (!P) return;
+  const D = Math.min(130, H * 0.16), ux = P[0] - cx, uy = P[1] - cy, ul = Math.hypot(ux, uy) || 1;   // out in open space, beyond the Voyager
+  let x = P[0] + ux / ul * (D * 0.75 + 30), y = P[1] + uy / ul * (D * 0.75 + 30);
+  x = Math.max(D / 2 + 12, Math.min(W - D / 2 - 12, x)); y = Math.max(D / 2 + 12, Math.min(H - D / 2 - 12, y));
+  GR.box = { x: x - D / 2, y: y - D / 2, w: D, h: D };
+  const el = sec - GR.t0, sweep = Math.min(1, el / 6) * Math.PI * 2, A = Math.min(1, el / 0.6) * out;
+  ctx.save(); ctx.globalAlpha = A * 0.55;                                   // the rim of the disc
+  ctx.strokeStyle = 'rgba(255,214,150,0.6)'; ctx.lineWidth = 0.8; ctx.beginPath(); ctx.arc(x, y, D / 2, -Math.PI / 2, -Math.PI / 2 + sweep); ctx.stroke();
+  ctx.globalAlpha = A * 0.9;
+  ctx.beginPath(); ctx.moveTo(x, y); ctx.arc(x, y, D / 2 + 2, -Math.PI / 2, -Math.PI / 2 + sweep); ctx.closePath(); ctx.clip();
+  ctx.drawImage(GR_IMG, x - D / 2, y - D / 2, D, D);
+  ctx.restore();
+  if (sweep < Math.PI * 2) { const a = -Math.PI / 2 + sweep;                  // the tracing 'needle'
+    glow(x + Math.cos(a) * D * 0.48, y + Math.sin(a) * D * 0.48, 5, '255,230,180', 0.6 * A); }
+}
+
 // only one hover sound at a time. the current one is AUDIO.playing: { key, clip, until, gain, stop }.
 // it stops (with a short fade) when the pointer wanders away, leaves the window, or another object starts its sound
 const STOP_DIST = 110;                          // px from the object (or its panel) before its sound fades out
@@ -1673,7 +1700,10 @@ function render() {
     else if (pv) {
       const P = pv.key === 'ARECIBO' ? EXOTIC.arecibo : spot(pv.key), bx = pv.key === 'ARECIBO' && ARECIBO.box;
       const inBox = bx && MOUSE.x > bx.x - 30 && MOUSE.x < bx.x + bx.w + 30 && MOUSE.y > bx.y - 30 && MOUSE.y < bx.y + bx.h + 30;
+      const gb = (pv.key === 'VGR1' || pv.key === 'VGR2') && GR.box;
+      const inGR = gb && MOUSE.x > gb.x - 20 && MOUSE.x < gb.x + gb.w + 20 && MOUSE.y > gb.y - 20 && MOUSE.y < gb.y + gb.h + 20;
       if (pv.key === 'RADIO') { if (!MOUSE.on || ringD > 70) stopVoice(0.6); }   // the ring: stay near it, anywhere along it
+      else if (inGR) { /* watching the record: stay */ }
       else if (!MOUSE.on || (!inBox && (!P || Math.hypot(P[0] - MOUSE.x, P[1] - MOUSE.y) > STOP_DIST))) stopVoice(0.6);
     }
     const pl = AUDIO.playing;
@@ -1685,6 +1715,7 @@ function render() {
   }
 
   drawArecibo(sec);
+  drawGoldenRecord(sec, pos);
 
   // ---- hover: names for the natural world
   if (MOUSE.on) {
