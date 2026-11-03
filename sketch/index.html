@@ -1141,6 +1141,24 @@ function frame() {
   }
   ctx.globalAlpha = 1;
 
+  // ---- our radio bubble: the oldest human radio (Marconi, Dec 1901) has travelled one light-year per year since.
+  // a faint wavefront all round, growing in real time; plus the Arecibo message (Nov 1974), beamed toward M13
+  {
+    const YR = 365.25 * 864e5, firstRadio = Date.parse('1901-12-12T00:00Z'), arecibo = Date.parse('1974-11-16T00:00Z');
+    const rB = rOf((t - firstRadio) / YR * LY), shimmer = 0.75 + 0.25 * Math.sin(sec * 0.6);
+    EXOTIC.rRadio = rB; EXOTIC.radioYears = (t - firstRadio) / YR;
+    ctx.lineWidth = 6; ctx.strokeStyle = `rgba(150,230,210,${0.035 * shimmer})`; ctx.beginPath(); ctx.arc(cx, cy, rB, 0, 6.283); ctx.stroke();
+    ctx.setLineDash([1.5, 5]); ctx.lineDashOffset = -sec * 2; ctx.lineWidth = 1;                       // the wavefront itself, creeping outward
+    ctx.strokeStyle = `rgba(170,240,220,${0.28 * shimmer})`; ctx.beginPath(); ctx.arc(cx, cy, rB, 0, 6.283); ctx.stroke();
+    ctx.setLineDash([]);
+    const rA = rOf((t - arecibo) / YR * LY), thA = trueAngle(234, s.lam) * RAD, half = 0.06;            // M13: ecliptic longitude ~234°
+    EXOTIC.arecibo = polar(thA / RAD, rA);
+    for (const [w, a] of [[5, 0.12], [1.6, 0.6]]) {
+      ctx.lineWidth = w; ctx.strokeStyle = `rgba(255,225,150,${a * (0.8 + 0.2 * Math.sin(sec * 1.7))})`;
+      ctx.beginPath(); ctx.arc(cx, cy, rA, -thA - half, -thA + half); ctx.stroke();
+    }
+  }
+
   // ---- the exotic: a pulsar ticking, and now and then a supernova somewhere in the galaxy
   if (EXOTIC.pulsar) {
     const [x, y] = EXOTIC.pulsar, P = 0.089 * 12, fl = Math.exp(-mod(sec, P) / 0.07), ba = sec * 0.35;
@@ -1536,7 +1554,11 @@ function frame() {
     let name = hit && hit.name;
     if (!name && !frame.overSound) {
       const dist = Math.hypot(MOUSE.x - cx, MOUSE.y - cy);
-      if (Math.abs(dist - EXOTIC.rHP) < 16) name = 'heliopause · where the sun\'s wind ends';
+      if (EXOTIC.arecibo && Math.hypot(MOUSE.x - EXOTIC.arecibo[0], MOUSE.y - EXOTIC.arecibo[1]) < 16)
+        name = `the arecibo message · sent toward M13 in 1974, ${Math.round(EXOTIC.radioYears - 73)} light-years out`;
+      else if (EXOTIC.rRadio && Math.abs(dist - EXOTIC.rRadio) < 8)
+        name = `our first radio, 1901 · the edge of humanity's signals, ${EXOTIC.radioYears.toFixed(1)} light-years out`;
+      else if (Math.abs(dist - EXOTIC.rHP) < 16) name = 'heliopause · where the sun\'s wind ends';
       else if (dist > EXOTIC.oort[0] && dist < EXOTIC.oort[1]) name = 'oort cloud';
       else if (dist > EXOTIC.rC) name = 'the oldest light · cosmic microwave background';
     }
