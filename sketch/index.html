@@ -609,6 +609,7 @@ function pulse(q, u, dirSign, rgb, a, vpx, sec) {
 // we build that vector in Earth-fixed 3D (east/north/up at the station), rotate it with the globe and
 // project it: its on-screen direction aims the bowl, and how much it points at us sets how round the bowl looks
 const SLEW = { DSS14: 0.25, DSS43: 0.25, DSS63: 0.25 };            // deg/s; 70 m dishes are slower
+const BIG = new Set(['DSS14', 'DSS43', 'DSS63']);                   // the three 70 m antennas
 const DISH_STATE = {};
 function viewDir(rot, v) {                      // Earth-fixed unit vector -> [screen x, screen y (down), toward viewer]
   const lon = Math.atan2(v[1], v[0]) / RAD, lat = Math.asin(Math.max(-1, Math.min(1, v[2]))) / RAD;
@@ -941,13 +942,17 @@ function frame() {
     const ux = pt[0] - cx, uy = pt[1] - cy, ul = Math.hypot(ux, uy) || 1, nx = ux / ul, ny = uy / ul;
     if (!hidden) {
       glow(pt[0], pt[1], 18, '255,210,122', 0.12 + 0.04 * nOn);
-      const up = viewDir(rotG, pointing(ll, 0, 90)), mine = DISHES.filter(d => d.station === name);
-      const tx = -up[1], ty = up[0], tl = Math.hypot(tx, ty) || 1;                // along the surface, for spacing the dishes out
+      // only dishes assigned to a spacecraft; the big 70 m dish in the middle, the 34 m dishes clustered around it
+      const up = viewDir(rotG, pointing(ll, 0, 90));
+      const mine = DISHES.filter(d => d.station === name && !NOT_CRAFT.has(d.target))
+        .sort((a, b) => (BIG.has(b.dish) - BIG.has(a.dish)) || a.dish.localeCompare(b.dish));
       mine.forEach((d, i) => {
-        const off = (i - (mine.length - 1) / 2) * 8.5, x = pt[0] + tx / tl * off, y = pt[1] + ty / tl * off;
+        const big = BIG.has(d.dish), ri = mine.length === 1 ? 0 : i + (BIG.has(mine[0].dish) ? 0 : 0.6);
+        const a = ri * 2.4 + 0.7, rr = 6.5 * Math.sqrt(ri);                       // a loose sunflower cluster, never a line
+        const x = pt[0] + rr * Math.cos(a), y = pt[1] + rr * Math.sin(a) * 0.8;
         const S0 = DISH_STATE[d.dish], aim = viewDir(rotG, pointing(ll, S0.az, S0.el));
         dishPos[d.dish] = [x, y];
-        drawPointedDish(x, y, [up[0], up[1]], aim, active(d) && !NOT_CRAFT.has(d.target), sec);
+        drawPointedDish(x, y, [up[0], up[1]], aim, active(d), sec, big ? 0.85 : 0.5);
       });
       ctx.font = FONT(10); ctx.fillStyle = 'rgba(255,225,170,0.7)';
       ctx.textAlign = nx < 0 ? 'right' : 'left';
