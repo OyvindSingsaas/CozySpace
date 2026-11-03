@@ -1286,8 +1286,14 @@ function liftVeil() {
   if (VEIL.done) return;
   const el = (performance.now() - VEIL.t0) / 1000, s = document.querySelector('#veil .s');
   if (s && el > 3 && !FEED.live && !VEIL.slow) { VEIL.slow = true; s.textContent = 'still tuning in…'; }
-  const ready = LAND && GLOBE.ready && (FEED.live || el > 6);
-  if ((ready && el > 0.9) || el > 8) {
+  if (s && FEED.live && !VEIL.who) {                      // the first live reading: name the farthest craft someone is talking to
+    const far = k => { const e = eph(k, now()); if (e) return e.d; const h = homeOf(k); return h === 'JUP' ? 7e8 : h === 'MARS' ? 2e8 : h === 'MOON' ? 4e5 : 1.5e6; };
+    const ks = [...new Set([...LINKS.values()].filter(L => L.want).map(L => L.target))].sort((a, b) => far(b) - far(a));
+    VEIL.who = ks.length ? nameOf(ks[0]).toLowerCase() : '-';
+    if (ks.length) { s.style.opacity = 0; setTimeout(() => { s.textContent = `someone is talking to ${VEIL.who}…`; s.style.opacity = 1; }, 500); VEIL.hold = el + 2.6; }
+  }
+  const ready = LAND && GLOBE.ready && (FEED.live || el > 6) && el > (VEIL.hold || 0);
+  if ((ready && el > 0.9) || el > 9) {
     VEIL.done = true; document.body.classList.add('ready');
     setTimeout(() => { const v = document.getElementById('veil'); if (v) v.remove(); }, 2600);
   }
