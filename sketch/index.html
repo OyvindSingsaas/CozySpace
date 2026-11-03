@@ -602,12 +602,12 @@ function dest([lon, lat], brg, dist) {
 // real light-time, or the time needed at the screen speed limit, whichever is longer
 const VPX = +params.get('vmax') || 120, TABLES = new Map();
 const BITS_PER_PACKET = 8e6 * (+params.get('mb') || 1), MIN_GAP = 2, UPLINK_EVERY = 300;   // 1 packet = 1 MB
-function travelBin(bin) {
-  const key = bin + '|' + W + 'x' + H;
+function travelBin(bin, lb) {                // lb: the on-screen path length, in 5% steps
+  const key = bin + '|' + lb;
   if (TABLES.has(key)) return TABLES.get(key);
-  const dT = 10 ** (bin / 300), Lp = Math.max(40, rOf(dT) - R);            // nominal on-screen length: the target's radius
+  const dT = 10 ** (bin / 300), Lp = 1.05 ** lb;
   const FT = logFrac(dT) || 1e-6, span = Math.log10(LIGHT_DAY) - LOG_D0, N = 400;
-  const dAt = s => s <= 0 ? 0 : 10 ** (LOG_D0 + span * (s * FT) ** (1 / GAMMA));
+  const dAt = s => 10 ** (LOG_D0 + span * Math.max(0, s * FT) ** (1 / GAMMA));   // s = 0 is the scale's floor, not 0 km: no pause at the dish
   const ts = [0], ss = [1];
   let tt = 0;
   for (let i = 1; i <= N; i++) {
@@ -616,14 +616,16 @@ function travelBin(bin) {
     ts.push(tt); ss.push(s1);
   }
   const tab = { ts, ss, T: tt };
-  if (TABLES.size > 400) TABLES.clear();
+  if (TABLES.size > 1500) TABLES.clear();
   TABLES.set(key, tab);
   return tab;
 }
-// a profile for any distance, blended between the two neighbouring bins so nothing steps as distances drift
-function travelTable(dT) {
-  const b = Math.log10(dT) * 300, b0 = Math.floor(b), u = b - b0, A = travelBin(b0), B = travelBin(b0 + 1);
-  return { A, B, u, T: A.T + (B.T - A.T) * u };
+// a profile for any distance and path length, blended between neighbouring bins so nothing steps as they drift
+function travelTable(dT, Lp) {
+  const b = Math.log10(dT) * 300, b0 = Math.floor(b), u = b - b0;
+  const l = Math.log(Math.max(20, Lp)) / Math.log(1.05), l0 = Math.floor(l), v = l - l0;
+  const mix = (A, B, w) => ({ A, B, u: w, T: A.T + (B.T - A.T) * w });
+  return mix(mix(travelBin(b0, l0), travelBin(b0, l0 + 1), v), mix(travelBin(b0 + 1, l0), travelBin(b0 + 1, l0 + 1), v), u);
 }
 function sAt(tab, tl) {
   if (tab.A) return sAt(tab.A, tl / tab.T * tab.A.T) * (1 - tab.u) + sAt(tab.B, tl / tab.T * tab.B.T) * tab.u;
@@ -635,7 +637,18 @@ function sAt(tab, tl) {
 
 // a signal as a wave packet: a carrier wave under a Gaussian envelope, travelling along the path.
 // faster packets stretch a little (speed = how far along the path it moves per second)
-const qLen = q => { let L = 0, a = q[0]; for (let i = 1; i <= 8; i++) { const b = qAt(q, i / 8); L += Math.hypot(b[0] - a[0], b[1] - a[1]); a = b; } return L; };
+function arcOf(q) {                          // cumulative length along the curve, 48 steps, cached on the curve
+  if (q.arc) return q.arc;
+  const c = [0]; let a = q[0];
+  for (let i = 1; i <= 48; i++) { const b = qAt(q, i / 48); c.push(c[i - 1] + Math.hypot(b[0] - a[0], b[1] - a[1])); a = b; }
+  return (q.arc = c);
+}
+const qLen = q => arcOf(q)[48];
+function qAtS(q, s) {                         // the point a fraction s of the way along the curve (by length)
+  const c = arcOf(q), x = Math.max(0, Math.min(1, s)) * c[48];
+  let lo = 0, hi = 48; while (hi - lo > 1) { const m = (lo + hi) >> 1; if (c[m] <= x) lo = m; else hi = m; }
+  return qAt(q, (lo + (x - c[lo]) / ((c[hi] - c[lo]) || 1)) / 48);
+}
 function pulse(q, u, dirSign, rgb, a, vpx, sec) {
   if (a < 0.01) return;
   const L = qLen(q) || 1, half = 6 / L;                        // ~12 px long
@@ -646,13 +659,13 @@ function pulse(q, u, dirSign, rgb, a, vpx, sec) {
   for (let i = 0; i <= N; i++) {
     const f = i / N * 2 - 1, t = u + f * half;
     if (t < 0 || t > 1) { prev = null; continue; }
-    const p0 = qAt(q, t), p1 = qAt(q, Math.min(1, t + 0.003)), dx = p1[0] - p0[0], dy = p1[1] - p0[1], dl = Math.hypot(dx, dy) || 1;
+    const p0 = qAtS(q, t), p1 = qAtS(q, Math.min(1, t + 1 / L)), dx = p1[0] - p0[0], dy = p1[1] - p0[1], dl = Math.hypot(dx, dy) || 1;
     const env = Math.exp(-f * f * 3.5), off = amp * env * Math.sin(f * cycles * 2 * Math.PI + dirSign * sec * (3 + 2 * cycles));
     const pt = [p0[0] - dy / dl * off, p0[1] + dx / dl * off];
     if (prev) { ctx.strokeStyle = `rgba(${rgb},${a * env})`; ctx.beginPath(); ctx.moveTo(prev[0], prev[1]); ctx.lineTo(pt[0], pt[1]); ctx.stroke(); }
     prev = pt;
   }
-  const h = qAt(q, u); glow(h[0], h[1], 5, rgb, a * 0.25);
+  const h = qAtS(q, u); glow(h[0], h[1], 5, rgb, a * 0.25);
 }
 
 // a little deep-space antenna: pedestal, tilted parabolic bowl, feed struts, blinking activity light
@@ -1531,7 +1544,7 @@ function render() {
       ctx.beginPath(); ctx.moveTo(...q[0]); ctx.quadraticCurveTo(...q[1], ...q[2]); ctx.stroke();
       // real light speed, with a speed limit on screen: a packet moves at c (on the log scale) until that would
       // exceed VPX px/s, then glides at VPX. far out: true speed; near Earth: a few seconds' grace.
-      const dT = S[d.target].d, Lp = qLen(q), tab = travelTable(dT);
+      const dT = S[d.target].d, Lp = qLen(q), tab = travelTable(dT, Lp);
       // one packet = one megabyte. downlink: the real data rate sets how often one leaves the spacecraft.
       // uplinks report no rate in the feed, so a command packet goes up every UPLINK_EVERY seconds.
       const rate = downs.reduce((a, x) => a + x.rate, 0);                  // bit/s, summed over the dish's downlink channels
