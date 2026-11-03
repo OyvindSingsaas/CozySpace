@@ -528,6 +528,33 @@ function dest([lon, lat], brg, dist) {
   return [l2 / RAD, p2 / RAD];
 }
 
+// travel profile along a path (s = 1 at the spacecraft, 0 at the station): time spent on each step is the
+// real light-time, or the time needed at the screen speed limit, whichever is longer
+const VPX = +params.get('vmax') || 120, TABLES = new Map();
+function travelTable(dT, Lp) {
+  const key = Math.round(Math.log10(dT) * 300) + '|' + Math.round(Lp / 4);
+  if (TABLES.has(key)) return TABLES.get(key);
+  const FT = logFrac(dT) || 1e-6, span = Math.log10(LIGHT_DAY) - LOG_D0, N = 400;
+  const dAt = s => s <= 0 ? 0 : 10 ** (LOG_D0 + span * (s * FT) ** (1 / GAMMA));
+  const ts = [0], ss = [1];
+  let tt = 0;
+  for (let i = 1; i <= N; i++) {
+    const s0 = 1 - (i - 1) / N, s1 = 1 - i / N;
+    tt += Math.max((dAt(s0) - dAt(s1)) / C_KMS, (Lp / N) / VPX);
+    ts.push(tt); ss.push(s1);
+  }
+  const tab = { ts, ss, T: tt };
+  if (TABLES.size > 400) TABLES.clear();
+  TABLES.set(key, tab);
+  return tab;
+}
+function sAt(tab, tl) {
+  let lo = 0, hi = tab.ts.length - 1;
+  while (hi - lo > 1) { const m = (lo + hi) >> 1; if (tab.ts[m] <= tl) lo = m; else hi = m; }
+  const f = (tl - tab.ts[lo]) / ((tab.ts[hi] - tab.ts[lo]) || 1);
+  return tab.ss[lo] + (tab.ss[hi] - tab.ss[lo]) * f;
+}
+
 // a signal as a wave packet: a carrier wave under a Gaussian envelope, travelling along the path.
 // faster packets stretch a little (speed = how far along the path it moves per second)
 const qLen = q => { let L = 0, a = q[0]; for (let i = 1; i <= 8; i++) { const b = qAt(q, i / 8); L += Math.hypot(b[0] - a[0], b[1] - a[1]); a = b; } return L; };
@@ -812,10 +839,9 @@ function frame() {
       const strength = Math.max(0.25, Math.min(0.95, (pw + 180) / 70));
       ctx.lineWidth = 0.7; ctx.strokeStyle = `rgba(200,205,255,${0.07 * A})`;
       ctx.beginPath(); ctx.moveTo(...q[0]); ctx.quadraticCurveTo(...q[1], ...q[2]); ctx.stroke();
-      // real light speed. packets leave the source every `gap` seconds; each sits at the distance light has
-      // covered since it left, drawn on the log scale. far out they barely move; near Earth they rush in.
-      const dT = S[d.target].d, FT = logFrac(dT) || 1e-6, Lp = qLen(q), Tl = dT / C_KMS;
-      const sOf = dist => Math.max(0, Math.min(1, logFrac(Math.max(1, dist)) / FT));
+      // real light speed, with a speed limit on screen: a packet moves at c (on the log scale) until that would
+      // exceed VPX px/s, then glides at VPX. far out: true speed; near Earth: a few seconds' grace.
+      const dT = S[d.target].d, Lp = qLen(q), Tl = dT / C_KMS, tab = travelTable(dT, Lp);
       const rate = Math.max(1, ...downs.map(x => x.rate));
       const gap = Math.max(0.5, Tl / (2 + 0.8 * Math.log10(rate + 1)));     // a few packets in flight; more for higher data rates
       const tnow = t / 1000, phase = hash(d.dish + d.target) * gap;
@@ -823,14 +849,14 @@ function frame() {
         if (!on) continue;
         const g = dir > 0 ? gap * 2 : gap, k0 = Math.floor((tnow - phase) / g);   // uplinks: sparser
         let last = -1;
-        for (let k = Math.ceil(Tl / g); k >= 0; k--) {
+        for (let k = Math.ceil(tab.T / g); k >= 0; k--) {
           const age = tnow - (phase + (k0 - k) * g);
-          if (age < 0 || age > Tl) continue;
-          const dist = dir < 0 ? dT - C_KMS * age : C_KMS * age;          // distance from Earth
-          const u = sOf(dist);
-          if (last >= 0 && Math.abs(u - last) * Lp < 28) continue;        // don't stack packets on top of each other
+          if (age < 0 || age > tab.T) continue;
+          const tl = dir < 0 ? age : tab.T - age;                     // table runs spacecraft -> Earth
+          const u = sAt(tab, tl);
+          if (last >= 0 && Math.abs(u - last) * Lp < 28) continue;     // don't stack packets on top of each other
           last = u;
-          const v = Math.abs(u - sOf(dist + dir * C_KMS * 0.1)) / 0.1 * Lp;   // screen speed, px/s
+          const v = Math.abs(u - sAt(tab, Math.min(tab.T, tl + 0.1))) / 0.1 * Lp;   // screen speed, px/s
           const fl = d.target === 'VGR1' ? 0.4 + 0.6 * Math.abs(Math.sin(sec * 2.3 + k)) : 1;
           pulse(q, u, dir, rgb, a0 * fl * A, v, sec);
         }
