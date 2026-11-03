@@ -11,6 +11,7 @@ import base64, json, os, subprocess, sys, tempfile
 
 CLIPS = {
     "motherChild": ("Kiss, Mother and Child.wav", "Voyager Golden Record, 'Sounds of Earth': kiss, mother and child (NASA/JPL, 1977)"),
+    "perseus": ("sonify5_perseus.mp3", "Sonification of the supermassive black hole in the Perseus galaxy cluster. NASA/CXC/SAO/K. Arcand, M. Russo & A. Santaguida. CC BY-NC 3.0"),
     # "whale": ("Whales.wav", "Voyager Golden Record: humpback whale song (Roger Payne recordings)"),
 }
 
@@ -18,9 +19,9 @@ def encode(src):
     with tempfile.TemporaryDirectory() as d:
         out = os.path.join(d, "o.mp3")
         # mono, gentle loudness normalisation, short fades so nothing clicks
-        subprocess.run(["ffmpeg", "-y", "-loglevel", "error", "-i", src, "-ac", "1", "-ar", "22050",
+        subprocess.run(["ffmpeg", "-y", "-loglevel", "error", "-i", src, "-ac", "1", "-ar", "32000",
                         "-af", "loudnorm=I=-20:TP=-2:LRA=11,afade=t=in:d=0.15,areverse,afade=t=in:d=0.6,areverse",
-                        "-b:a", "48k", out], check=True)
+                        "-b:a", "56k", out], check=True)
         return open(out, "rb").read()
 
 def main():
