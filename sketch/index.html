@@ -163,7 +163,8 @@ const params = new URLSearchParams(location.search);
 const SPEED = +params.get('speed') || 1;
 const T0 = Date.now();
 const FPS = +params.get('fps') || 15;
-const now = () => T0 + (Date.now() - T0) * SPEED;
+const OFFSET = (+params.get('offset') || 0) * 60000;     // ?offset=25 : look 25 minutes ahead
+const now = () => T0 + OFFSET + (Date.now() - T0) * SPEED;
 const J2000 = 946728000000, RAD = Math.PI / 180, C_KMS = 299792.458, AU = 1.495978707e8;
 const mod = (a, m) => ((a % m) + m) % m;
 
