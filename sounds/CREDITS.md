@@ -8,3 +8,5 @@
 | moon.mp3 | Apollo 11, Neil Armstrong's first words on the Moon (NASA, 20 July 1969) | NASA mission audio, public domain. Played on hovering the Moon. |
 
 The background music is generated live in the browser (no recording).
+
+- The 1901 radio-bubble sound is generated in the page (a re-creation of Marconi's Morse "S" from a spark-gap transmitter); no recording of the original exists.

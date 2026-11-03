@@ -1054,7 +1054,8 @@ const OBJECT_SOUNDS = { VGR1: ['motherChild', 'whale'], VGR2: ['whale', 'motherC
 const CLIP_GAIN = { perseus: 0.6, mars: 0.85 };                   // level-match the clips
 const CLIP_TITLES = { motherChild: 'golden record · kiss, mother and child', whale: 'golden record · humpback whales',
   perseus: 'the black hole in the perseus cluster, as sound · NASA/CXC/SAO',
-  mars: 'sound on mars · perseverance\'s microphone', moonStep: 'apollo 11 · one small step, 20 july 1969' };
+  mars: 'sound on mars · perseverance\'s microphone', moonStep: 'apollo 11 · one small step, 20 july 1969',
+  marconi: 'marconi, 12 dec 1901 · the letter S in morse ( · · · ), re-created' };
 const pref = (() => { try { return localStorage.getItem('cozyspace.sound') === 'on'; } catch (e) { return false; } })();
 function savePref(v) { try { localStorage.setItem('cozyspace.sound', v ? 'on' : 'off'); } catch (e) {} }
 function impulse(C, secs, decay) {
@@ -1121,6 +1122,43 @@ function paintSndButton() {
 document.getElementById('snd').addEventListener('click', e => { e.stopPropagation(); setSound(!AUDIO.on); });
 addEventListener('pointerdown', () => { if (pref && !AUDIO.ctx) setSound(true); }, { once: true });   // sound was on last time: resume on first touch
 paintSndButton();
+// Marconi, 12 Dec 1901: the first transatlantic radio signal was the letter S in Morse (· · ·), sent again and
+// again from Poldhu and heard as faint clicks at Signal Hill. no recording exists, so this is a re-creation: the
+// rasp of a spark-gap transmitter (noise, band-passed and chopped), keying S S S…, fading in and out, over static
+function marconiS(C) {
+  const t0 = C.currentTime + 0.05, n = C.sampleRate * 2, nb = C.createBuffer(1, n, C.sampleRate), d = nb.getChannelData(0);
+  for (let i = 0; i < n; i++) d[i] = Math.random() * 2 - 1;
+  const out = C.createGain(); out.gain.value = 0.9;
+  // the spark: noise -> band-pass -> chopped by a square wave (the spark rate) -> keyed by the Morse envelope
+  const spark = C.createBufferSource(); spark.buffer = nb; spark.loop = true;
+  const bp = C.createBiquadFilter(); bp.type = 'bandpass'; bp.frequency.value = 900; bp.Q.value = 2.5;
+  const chop = C.createGain(); chop.gain.value = 0.5;
+  const rate = C.createOscillator(), depth = C.createGain(); rate.type = 'square'; rate.frequency.value = 340; depth.gain.value = 0.5;
+  rate.connect(depth).connect(chop.gain);
+  const key = C.createGain(); key.gain.setValueAtTime(0, t0);
+  const fade = C.createGain();                 // slow fading across the ocean (QSB)
+  const qsb = C.createOscillator(), qd = C.createGain(); qsb.frequency.value = 0.13; qd.gain.value = 0.35; fade.gain.value = 0.65; qsb.connect(qd).connect(fade.gain);
+  spark.connect(bp).connect(chop).connect(key).connect(fade).connect(out);
+  const DIT = 0.085, REPS = 8;
+  let t = t0 + 0.6;
+  for (let r = 0; r < REPS; r++) {
+    for (let k = 0; k < 3; k++) { key.gain.setValueAtTime(0, t); key.gain.linearRampToValueAtTime(0.32, t + 0.006);
+      key.gain.setValueAtTime(0.32, t + DIT - 0.006); key.gain.linearRampToValueAtTime(0, t + DIT); t += DIT * 2; }
+    t += 0.75;                                  // the pause before the next S
+  }
+  // the static: soft hiss with crackles, the whole time
+  const hiss = C.createBufferSource(); hiss.buffer = nb; hiss.loop = true; hiss.playbackRate.value = 0.7;
+  const lp = C.createBiquadFilter(); lp.type = 'lowpass'; lp.frequency.value = 2400; const hg = C.createGain(); hg.gain.value = 0.035;
+  hiss.connect(lp).connect(hg).connect(out);
+  const dur = t - t0 + 0.6;
+  out.gain.setValueAtTime(0.0001, t0); out.gain.exponentialRampToValueAtTime(0.9, t0 + 0.5);
+  out.gain.setValueAtTime(0.9, t0 + dur - 0.8); out.gain.exponentialRampToValueAtTime(0.0001, t0 + dur);
+  out.connect(AUDIO.master); out.connect(AUDIO.verb);
+  const parts = [spark, rate, qsb, hiss];
+  for (const x of parts) x.start(t0);
+  return { src: { stop: when => parts.forEach(x => { try { x.stop(when); } catch (e) {} }) }, gain: out, dur };
+}
+
 // only one hover sound at a time. the current one is AUDIO.playing: { key, clip, until, gain, stop }.
 // it stops (with a short fade) when the pointer wanders away, leaves the window, or another object starts its sound
 const STOP_DIST = 110;                          // px from the object (or its panel) before its sound fades out
@@ -1145,7 +1183,7 @@ function hoverSound(key, x, y, sec) {        // entering an object: its next cli
   stopVoice(0.3);
   const i = (AUDIO.turn[key] = ((AUDIO.turn[key] ?? -1) + 1)) % list.length, clip = list[i];
   const v = playClip(clip, x);
-  if (v) AUDIO.playing = { key, clip, until: sec + v.dur, src: v.src, gain: v.gain };
+  if (v) AUDIO.playing = { key, clip, t0: sec, until: sec + v.dur, src: v.src, gain: v.gain };
 }
 
 // ======================= frame =======================
@@ -1615,6 +1653,12 @@ function render() {
     const spot = k => pos[k] || (EXOTIC.hover.find(h => h.key === k) && [EXOTIC.hover.find(h => h.key === k).x, EXOTIC.hover.find(h => h.key === k).y]);
     if (MOUSE.on) for (const k of Object.keys(OBJECT_SOUNDS)) { const P = spot(k); if (P && Math.hypot(P[0] - MOUSE.x, P[1] - MOUSE.y) < (k === 'SGRA' ? 20 : 14)) over = k; }
     if (over && over !== frame.overSound && AUDIO.on) { const P = spot(over); hoverSound(over, P[0], P[1], sec); }
+    const ringD = MOUSE.on && EXOTIC.rRadio ? Math.abs(Math.hypot(MOUSE.x - cx, MOUSE.y - cy) - EXOTIC.rRadio) : 1e9;
+    if (!over && ringD < 8 && AUDIO.on && AUDIO.ctx && AUDIO.playing?.key !== 'RADIO') {
+      stopVoice(0.3);
+      const v = marconiS(AUDIO.ctx);
+      AUDIO.playing = { key: 'RADIO', clip: 'marconi', t0: sec, until: sec + v.dur, src: v.src, gain: v.gain, at: [MOUSE.x, MOUSE.y] };
+    }
     const onArecibo = MOUSE.on && EXOTIC.arecibo && Math.hypot(MOUSE.x - EXOTIC.arecibo[0], MOUSE.y - EXOTIC.arecibo[1]) < 26;
     if (onArecibo && ARECIBO.start === null) {
       stopVoice(0.3);
@@ -1629,11 +1673,12 @@ function render() {
     else if (pv) {
       const P = pv.key === 'ARECIBO' ? EXOTIC.arecibo : spot(pv.key), bx = pv.key === 'ARECIBO' && ARECIBO.box;
       const inBox = bx && MOUSE.x > bx.x - 30 && MOUSE.x < bx.x + bx.w + 30 && MOUSE.y > bx.y - 30 && MOUSE.y < bx.y + bx.h + 30;
-      if (!MOUSE.on || (!inBox && (!P || Math.hypot(P[0] - MOUSE.x, P[1] - MOUSE.y) > STOP_DIST))) stopVoice(0.6);
+      if (pv.key === 'RADIO') { if (!MOUSE.on || ringD > 70) stopVoice(0.6); }   // the ring: stay near it, anywhere along it
+      else if (!MOUSE.on || (!inBox && (!P || Math.hypot(P[0] - MOUSE.x, P[1] - MOUSE.y) > STOP_DIST))) stopVoice(0.6);
     }
     const pl = AUDIO.playing;
-    if (pl && pl.clip && sec < pl.until && spot(pl.key)) {                      // a quiet caption above the object while its clip plays
-      const P = spot(pl.key), f = Math.min(1, (pl.until - sec) / 2, (sec - (pl.until - (AUDIO.buffers[pl.clip]?.duration || 1))) / 1);
+    if (pl && pl.clip && sec < pl.until && (pl.at || spot(pl.key))) {          // a quiet caption by the object while its clip plays
+      const P = pl.at || spot(pl.key), f = Math.min(1, (pl.until - sec) / 2, (sec - pl.t0) / 1);
       ctx.font = FONT(10); ctx.fillStyle = `rgba(255,215,170,${0.6 * Math.max(0, f)})`; ctx.textAlign = 'center';
       ctx.fillText('♪ ' + (CLIP_TITLES[pl.clip] || pl.clip), P[0], P[1] + 32); ctx.textAlign = 'left';
     }
