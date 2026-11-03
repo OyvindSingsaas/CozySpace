@@ -1070,8 +1070,17 @@ function audioInit() {
   AUDIO.verb = C.createConvolver(); AUDIO.verb.buffer = impulse(C, 4.5, 2.6);
   const wet = C.createGain(); wet.gain.value = 0.55; AUDIO.verb.connect(wet).connect(AUDIO.master);
   for (const [k, uri] of Object.entries(window.SOUNDS || {}))
-    fetch(uri).then(r => r.arrayBuffer()).then(b => C.decodeAudioData(b)).then(buf => { AUDIO.buffers[k] = buf; }).catch(() => {});
+    loadClip(C, k, uri);
   startPad(C);
+}
+// decode a packed clip without fetch(): some browsers refuse fetch() of data: URIs from a file:// page.
+// bytes straight from the base64, callback-style decodeAudioData (works everywhere), failures logged, not hidden
+function loadClip(C, k, uri) {
+  try {
+    const bin = atob(uri.slice(uri.indexOf(',') + 1)), u8 = new Uint8Array(bin.length);
+    for (let i = 0; i < bin.length; i++) u8[i] = bin.charCodeAt(i);
+    C.decodeAudioData(u8.buffer, buf => { AUDIO.buffers[k] = buf; }, e => console.warn('cozyspace: could not decode', k, e));
+  } catch (e) { console.warn('cozyspace: could not load', k, e); }
 }
 function startPad(C) {
   // the pad: four slow chords (Dmaj9, Bm9, Gmaj9, A add9), each held ~32 s and crossfaded, through a gently
