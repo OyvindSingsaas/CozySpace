@@ -9,7 +9,16 @@
 <style>
   :root { --bg:#080a1c; --dim:#7c80a8; }
   html,body { margin:0; height:100%; background:var(--bg); overflow:hidden; }
-  canvas { display:block; width:100vw; height:100vh; }
+  canvas { display:block; width:100vw; height:100vh; transform:scale(1.035); filter:blur(3px); transition:transform 3.2s cubic-bezier(.2,.7,.2,1), filter 2.4s ease; }
+  body.ready canvas { transform:none; filter:none; }
+  #veil { position:fixed; inset:0; z-index:10; display:flex; flex-direction:column; align-items:center; justify-content:center; gap:14px;
+          background:radial-gradient(circle at 50% 50%, #141a42 0%, #080a1c 55%, #04040e 100%); transition:opacity 2s ease 0.2s;
+          font:400 12px/1 'Space Grotesk', system-ui, sans-serif; color:rgba(200,203,240,.55); }
+  #veil .t { font-size:13px; letter-spacing:.42em; color:rgba(225,226,250,.8); margin-right:-.42em; }
+  #veil .dot { width:6px; height:6px; border-radius:3px; background:#ffd9a8; box-shadow:0 0 14px 4px rgba(255,200,140,.35); animation:pulse 2.2s ease-in-out infinite; }
+  #veil .s { letter-spacing:.06em; transition:opacity .6s; }
+  @keyframes pulse { 0%,100% { opacity:.25; transform:scale(.8); } 50% { opacity:1; transform:scale(1.15); } }
+  body.ready #veil { opacity:0; pointer-events:none; }
   #snd { position:fixed; top:22px; right:24px; width:34px; height:34px; border-radius:17px; border:1px solid rgba(160,165,215,.25);
          background:rgba(12,14,36,.45); color:#a0a5d7; cursor:pointer; opacity:.45; transition:opacity .3s, border-color .3s; padding:0; }
   #snd:hover { opacity:.95; }
@@ -39,6 +48,7 @@
 </head>
 <body>
 <canvas id="c"></canvas>
+<div id="veil"><div class="dot"></div><div class="t">cozyspace</div><div class="s">listening to the deep space network…</div></div>
 <button id="inf" title="stories" aria-label="toggle stories">i</button>
 <div id="story"></div>
 <button id="snd" title="sound" aria-label="toggle sound"><svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.8" stroke-linecap="round" stroke-linejoin="round">
@@ -1270,7 +1280,20 @@ function hoverSound(key, x, y, sec) {        // entering an object: its next cli
 }
 
 // ======================= frame =======================
+// a quiet veil while the coastlines, the globe and the first live DSN reading arrive (at most ~8 s), then the scene settles in
+const VEIL = { done: false, t0: performance.now() };
+function liftVeil() {
+  if (VEIL.done) return;
+  const el = (performance.now() - VEIL.t0) / 1000, s = document.querySelector('#veil .s');
+  if (s && el > 3 && !FEED.live && !VEIL.slow) { VEIL.slow = true; s.textContent = 'still tuning in…'; }
+  const ready = LAND && GLOBE.ready && (FEED.live || el > 6);
+  if ((ready && el > 0.9) || el > 8) {
+    VEIL.done = true; document.body.classList.add('ready');
+    setTimeout(() => { const v = document.getElementById('veil'); if (v) v.remove(); }, 2600);
+  }
+}
 function frame() {
+  liftVeil();
   if (document.hidden) { setTimeout(frame, 1000); return; }      // asleep while nobody can see it
   try { render(); }
   catch (e) {                                   // one bad frame must never stop the animation
