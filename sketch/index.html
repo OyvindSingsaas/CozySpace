@@ -17,6 +17,7 @@
 
 <script src="https://cdn.jsdelivr.net/npm/d3@7.9.0/dist/d3.min.js"></script>
 <script src="https://cdn.jsdelivr.net/npm/topojson-client@3.1.0/dist/topojson-client.min.js"></script>
+<script src="https://cdn.jsdelivr.net/npm/satellite.js@5.0.0/dist/satellite.min.js"></script>
 <script src="../data/ephemeris.js"></script><!-- JPL Horizons, from scripts/fetch_ephemeris.py (optional: formulas are the fallback) -->
 <script>
 // ======================= data (static snapshot; later the live feed) =======================
@@ -36,7 +37,11 @@ const HOME = {
 };
 const NOT_CRAFT = new Set(['DSN', 'DSS', '']);        // maintenance / testing placeholders in the feed
 const homeOf = k => Object.keys(HOME).find(h => HOME[h].includes(k));
-const ALWAYS_ORBITING = ['LRO', 'KPLO', 'MSL'];                  // shown at their body even when quiet
+const ALWAYS_ORBITING = ['LRO', 'KPLO', 'MSL'];
+// real periods (s): orbiters around their body; surface rovers turn with their planet's day
+const ORBIT_PERIOD = { LRO: 113 * 60, KPLO: 118 * 60, CAPS: 6.5 * 86400, THB: 26 * 3600, THC: 26 * 3600,
+  MRO: 112 * 60, ODY: 118 * 60, M01O: 118 * 60, MVN: 4.5 * 3600, TGO: 2 * 3600, MEX: 7 * 3600, EMM: 55 * 3600,
+  MSL: 88775, M20: 88775, JNO: 33 * 86400 };                  // shown at their body even when quiet
 const hash = (str, n = 1) => { let h = 2166136261; for (const c of str) h = Math.imul(h ^ c.charCodeAt(0), 16777619); return mod(h * n, 1e6) / 1e6; };
 
 // ======================= NOAA OVATION aurora =======================
@@ -76,6 +81,30 @@ async function pollAurora() {
   setTimeout(pollAurora, 30 * 60 * 1000);
 }
 pollAurora();
+
+// ======================= the ISS =======================
+// orbit elements (TLE) from CelesTrak, refreshed twice a day; position propagated locally with SGP4 every frame
+const ISS = { rec: null };
+const ISS_FALLBACK = ['1 25544U 98067A   26306.75682168  .00005437  00000+0  10620-3 0  9990',
+                      '2 25544  51.6331 334.3796 0007124 340.7366  19.3352 15.49154261593232'];
+function setTLE(l1, l2) { try { if (window.satellite) ISS.rec = satellite.twoline2satrec(l1, l2); } catch (e) {} }
+setTLE(...ISS_FALLBACK);
+async function pollTLE() {
+  try {
+    const lines = (await (await fetch('https://celestrak.org/NORAD/elements/gp.php?CATNR=25544&FORMAT=TLE')).text()).split(/\r?\n/).map(x => x.trim());
+    const i = lines.findIndex(x => x.startsWith('1 25544'));
+    if (i >= 0 && lines[i + 1]?.startsWith('2 25544')) setTLE(lines[i], lines[i + 1]);
+  } catch (e) { /* keep the last elements */ }
+  setTimeout(pollTLE, 12 * 3600 * 1000);
+}
+pollTLE();
+function issAt(t) {                               // -> [lon, lat], km altitude
+  if (!ISS.rec || !window.satellite) return null;
+  const d = new Date(t), pv = satellite.propagate(ISS.rec, d);
+  if (!pv || !pv.position) return null;
+  const g = satellite.eciToGeodetic(pv.position, satellite.gstime(d));
+  return { ll: [satellite.degreesLong(g.longitude), satellite.degreesLat(g.latitude)], h: g.height };
+}
 
 // ======================= live DSN feed =======================
 let DISHES = SNAP, FRIENDLY = {}, FEED = { live: false, at: null };
@@ -499,51 +528,26 @@ function dest([lon, lat], brg, dist) {
   return [l2 / RAD, p2 / RAD];
 }
 
-// travel profile along a path: s = 1 at the spacecraft, 0 at the station.
-// physical: d(t) falls linearly (constant c) over Tphys seconds; screen position is logFrac(d).
-// soft landing: screen speed capped at VMAX path-lengths per second, so the last stretch never just flashes past.
-const TABLES = {}, VMAX = 0.15;
-function travelTable(dT) {
-  const key = Math.round(Math.log10(dT) * 200);
-  if (TABLES[key]) return TABLES[key];
-  const FT = logFrac(dT), N = 300, Tphys = 6 + 40 * FT * FT, span = Math.log10(LIGHT_DAY) - LOG_D0;
-  const dAt = s => 10 ** (LOG_D0 + span * (s * FT) ** (1 / GAMMA)), d0 = dAt(0);
-  const ts = [0], ss = [1];
-  let t = 0;
-  for (let i = 1; i <= N; i++) {
-    const s0 = 1 - (i - 1) / N, s1 = 1 - i / N;
-    t += Math.max((dAt(s0) - dAt(s1)) / (dT - d0) * Tphys, (1 / N) / VMAX);
-    ts.push(t); ss.push(s1);
-  }
-  return (TABLES[key] = { ts, ss, T: t });
-}
-function sAt(tab, tl) {
-  let lo = 0, hi = tab.ts.length - 1;
-  while (hi - lo > 1) { const m = (lo + hi) >> 1; if (tab.ts[m] <= tl) lo = m; else hi = m; }
-  const f = (tl - tab.ts[lo]) / ((tab.ts[hi] - tab.ts[lo]) || 1);
-  return tab.ss[lo] + (tab.ss[hi] - tab.ss[lo]) * f;
-}
-
-// a signal pulse: a short comet travelling along the path; head at u, tail behind it
 // a signal as a wave packet: a carrier wave under a Gaussian envelope, travelling along the path.
 // faster packets stretch a little (speed = how far along the path it moves per second)
 const qLen = q => { let L = 0, a = q[0]; for (let i = 1; i <= 8; i++) { const b = qAt(q, i / 8); L += Math.hypot(b[0] - a[0], b[1] - a[1]); a = b; } return L; };
-function pulse(q, u, dirSign, rgb, a, speed, sec) {
+function pulse(q, u, dirSign, rgb, a, vpx, sec) {
   if (a < 0.01) return;
-  const L = qLen(q) || 1, half = (9 + Math.min(14, speed * 140)) / L;      // half-length, in path units
-  const N = 34, cycles = 3.5, amp = 2.2 + 1.4 * Math.min(1, a);
+  const L = qLen(q) || 1, half = 6 / L;                        // ~12 px long
+  const cycles = Math.min(6, 1.3 + 1.4 * Math.log10(1 + vpx / 15));   // slow: a lazy swell; fast: a tight buzz
+  const N = 22, amp = 1.6;
   let prev = null;
-  ctx.lineWidth = 1.1; ctx.lineCap = 'round';
+  ctx.lineWidth = 0.9; ctx.lineCap = 'round';
   for (let i = 0; i <= N; i++) {
     const f = i / N * 2 - 1, t = u + f * half;
     if (t < 0 || t > 1) { prev = null; continue; }
     const p0 = qAt(q, t), p1 = qAt(q, Math.min(1, t + 0.003)), dx = p1[0] - p0[0], dy = p1[1] - p0[1], dl = Math.hypot(dx, dy) || 1;
-    const env = Math.exp(-f * f * 3.2), off = amp * env * Math.sin(f * cycles * 2 * Math.PI + dirSign * sec * 9);
+    const env = Math.exp(-f * f * 3.5), off = amp * env * Math.sin(f * cycles * 2 * Math.PI + dirSign * sec * (3 + 2 * cycles));
     const pt = [p0[0] - dy / dl * off, p0[1] + dx / dl * off];
     if (prev) { ctx.strokeStyle = `rgba(${rgb},${a * env})`; ctx.beginPath(); ctx.moveTo(prev[0], prev[1]); ctx.lineTo(pt[0], pt[1]); ctx.stroke(); }
     prev = pt;
   }
-  const h = qAt(q, u); glow(h[0], h[1], 9, rgb, a * 0.35);
+  const h = qAt(q, u); glow(h[0], h[1], 5, rgb, a * 0.25);
 }
 
 // a little deep-space antenna: pedestal, tilted parabolic bowl, feed struts, blinking activity light
@@ -663,7 +667,7 @@ function frame() {
   for (const [k, par] of Object.entries(PARENT)) {
     const i = (kids[par] = (kids[par] || 0) + 1) - 1, P = pos[par];
     if (!P) continue;
-    const w = 0.5 + 0.2 * i, ph = sec * w + i * 2.4, rr = 13 + 6 * i;
+    const ph = 2 * Math.PI * (t / 1000) / (ORBIT_PERIOD[k] || 7200) + i * 2.4, rr = 13 + 6 * i;   // real orbital period
     pos[k] = [P[0] + rr * Math.cos(ph), P[1] + rr * 0.45 * Math.sin(ph)];
     S[k] = { kind: 'craft', d: S[par].d, lam: S[par].lam, parent: par };
   }
@@ -737,6 +741,37 @@ function frame() {
   ctx.restore();
   ctx.beginPath(); ctx.arc(cx, cy, R, 0, 6.283); ctx.lineWidth = 1; ctx.strokeStyle = 'rgba(170,200,255,0.3)'; ctx.stroke();
 
+  // ---- the ISS, at its real position and (true-scale) altitude, with the last few minutes of its orbit behind it
+  {
+    const rot = d3.geoRotation(p.rotate());
+    const lift = (ll, h) => {                    // orthographic projection of a point above the surface
+      const [l, f] = rot(ll).map(v => v * RAD), x = Math.cos(f) * Math.sin(l), y = Math.sin(f), z = Math.cos(f) * Math.cos(l), k = 1 + h / 6371;
+      return { x: cx + R * k * x, y: cy - R * k * y, vis: z > 0 || Math.hypot(x, y) * k > 1 };
+    };
+    const now0 = issAt(t);
+    if (now0) {
+      ctx.lineCap = 'round';
+      let prev = null;
+      for (let k = 0; k <= 36; k++) {           // 12 minutes of trail
+        const q = issAt(t - k * 20000); if (!q) break;
+        const P = lift(q.ll, q.h);
+        if (prev && P.vis && prev.vis) { ctx.strokeStyle = `rgba(230,235,255,${0.45 * (1 - k / 36)})`; ctx.lineWidth = 1;
+          ctx.beginPath(); ctx.moveTo(prev.x, prev.y); ctx.lineTo(P.x, P.y); ctx.stroke(); }
+        prev = P;
+      }
+      const P = lift(now0.ll, now0.h);
+      if (P.vis) {
+        const lit = d3.geoDistance([s.lon, s.lat], now0.ll) / RAD < 90 + Math.acos(6371 / (6371 + now0.h)) / RAD;   // out of Earth's shadow?
+        if (lit) glow(P.x, P.y, 9, '255,245,220', 0.55 + 0.25 * Math.sin(sec * 2));
+        ctx.fillStyle = lit ? '#fff6e4' : 'rgba(150,165,200,0.8)';
+        ctx.fillRect(P.x - 3.2, P.y - 0.6, 6.4, 1.2); ctx.fillRect(P.x - 0.9, P.y - 1.3, 1.8, 2.6);   // a tiny truss and module
+        const ux = P.x - cx, uy = P.y - cy, ul = Math.hypot(ux, uy) || 1;
+        ctx.font = FONT(10); ctx.fillStyle = 'rgba(225,226,245,0.8)'; ctx.textAlign = ux < 0 ? 'right' : 'left';
+        ctx.fillText('ISS', P.x + ux / ul * 10 + (ux < 0 ? -4 : 4), P.y + uy / ul * 10 + 3); ctx.textAlign = 'left';
+      }
+    }
+  }
+
   // ---- stations: little dishes on the near side; far-side stations emit from the limb
   const active = d => d.signals.length > 0;
   const stPos = {};
@@ -777,20 +812,27 @@ function frame() {
       const strength = Math.max(0.25, Math.min(0.95, (pw + 180) / 70));
       ctx.lineWidth = 0.7; ctx.strokeStyle = `rgba(200,205,255,${0.07 * A})`;
       ctx.beginPath(); ctx.moveTo(...q[0]); ctx.quadraticCurveTo(...q[1], ...q[2]); ctx.stroke();
-      // light at constant c, drawn on the log scale, in compressed time (with a soft landing)
-      const tab = travelTable(S[d.target].d);
+      // real light speed. packets leave the source every `gap` seconds; each sits at the distance light has
+      // covered since it left, drawn on the log scale. far out they barely move; near Earth they rush in.
+      const dT = S[d.target].d, FT = logFrac(dT) || 1e-6, Lp = qLen(q), Tl = dT / C_KMS;
+      const sOf = dist => Math.max(0, Math.min(1, logFrac(Math.max(1, dist)) / FT));
       const rate = Math.max(1, ...downs.map(x => x.rate));
-      const n = Math.max(1, Math.round(Math.log10(rate) / 2));
-      const streak = (tl) => 0.01 + Math.min(0.09, 0.4 * (sAt(tab, tl) - sAt(tab, Math.min(tab.T, tl + 0.15))) / 0.15);
-      for (let i = 0; i < n; i++) {
-        if (downs.length) {                       // spacecraft -> Earth: crawls far out, glides in
-          const tl = mod(sec + i * tab.T / n + d.dish.length * 1.7, tab.T);
-          const fl = d.target === 'VGR1' ? 0.35 + 0.65 * Math.abs(Math.sin(sec * 2.3 + i)) : 1;
-          pulse(q, sAt(tab, tl), -1, '255,190,120', strength * fl * A, streak(tl), sec);
-        }
-        if (ups.length && i === 0) {              // Earth -> spacecraft: the same journey, reversed
-          const tl = mod(sec * 0.9 + tab.T * 0.5, tab.T);
-          pulse(q, sAt(tab, tab.T - tl), 1, '130,225,255', 0.7 * A, streak(tab.T - tl), sec);
+      const gap = Math.max(0.5, Tl / (2 + 0.8 * Math.log10(rate + 1)));     // a few packets in flight; more for higher data rates
+      const tnow = t / 1000, phase = hash(d.dish + d.target) * gap;
+      for (const [on, dir, rgb, a0] of [[downs.length, -1, '255,190,120', strength], [ups.length, 1, '130,225,255', 0.7]]) {
+        if (!on) continue;
+        const g = dir > 0 ? gap * 2 : gap, k0 = Math.floor((tnow - phase) / g);   // uplinks: sparser
+        let last = -1;
+        for (let k = Math.ceil(Tl / g); k >= 0; k--) {
+          const age = tnow - (phase + (k0 - k) * g);
+          if (age < 0 || age > Tl) continue;
+          const dist = dir < 0 ? dT - C_KMS * age : C_KMS * age;          // distance from Earth
+          const u = sOf(dist);
+          if (last >= 0 && Math.abs(u - last) * Lp < 28) continue;        // don't stack packets on top of each other
+          last = u;
+          const v = Math.abs(u - sOf(dist + dir * C_KMS * 0.1)) / 0.1 * Lp;   // screen speed, px/s
+          const fl = d.target === 'VGR1' ? 0.4 + 0.6 * Math.abs(Math.sin(sec * 2.3 + k)) : 1;
+          pulse(q, u, dir, rgb, a0 * fl * A, v, sec);
         }
       }
     }
