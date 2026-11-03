@@ -726,8 +726,7 @@ function paintGlobe(p, path, s, sunAng, sec) {
 }
 
 // ======================= the Sun =======================
-// a pre-rendered photosphere (limb darkening + granulation), today's real sunspots from NOAA,
-// and a soft corona with slowly turning streamers
+// a pre-rendered photosphere (limb darkening + granulation), today's real sunspots from NOAA, and a soft corona
 const SUN_R = 10;
 const SUN_DISC = (() => {
   const N = 128, c = document.createElement('canvas'); c.width = c.height = N;
@@ -756,17 +755,8 @@ async function pollSunspots() {
 }
 pollSunspots();
 function drawSun(x, y, t, sec) {
-  // corona: layered glow plus a few long, faint streamers turning very slowly
+  // corona: a soft layered glow
   glow(x, y, 110, '255,190,120', 0.10); glow(x, y, 46, '255,215,160', 0.28); glow(x, y, 20, '255,235,200', 0.55);
-  ctx.save(); ctx.translate(x, y); ctx.rotate(sec * 0.004);
-  for (let i = 0; i < 9; i++) {
-    const a = i * 0.7 + Math.sin(i * 3.3) * 0.4, L = SUN_R * (2.4 + 1.6 * Math.abs(Math.sin(i * 1.7 + sec * 0.03)));
-    const g = ctx.createLinearGradient(0, 0, Math.cos(a) * L, Math.sin(a) * L);
-    g.addColorStop(0, 'rgba(255,228,190,0.13)'); g.addColorStop(1, 'rgba(255,225,180,0)');
-    ctx.fillStyle = g; ctx.beginPath(); ctx.moveTo(Math.cos(a + 1.57) * SUN_R * 0.55, Math.sin(a + 1.57) * SUN_R * 0.55);
-    ctx.lineTo(Math.cos(a) * L, Math.sin(a) * L); ctx.lineTo(Math.cos(a - 1.57) * SUN_R * 0.55, Math.sin(a - 1.57) * SUN_R * 0.55); ctx.fill();
-  }
-  ctx.restore();
   ctx.drawImage(SUN_DISC, x - SUN_R, y - SUN_R, 2 * SUN_R, 2 * SUN_R);
   // sunspots: heliographic lat/lon (east positive, as seen from Earth), carried west by the Sun's ~13.2°/day rotation
   for (const sp of SUNSPOTS) {
