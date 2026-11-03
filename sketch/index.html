@@ -1198,6 +1198,8 @@ function frame() {
     ctx.setLineDash([]);
     const rA = rOf((t - arecibo) / YR * LY), thA = trueAngle(234, s.lam) * RAD, half = 0.06;            // M13: ecliptic longitude ~234°
     EXOTIC.arecibo = polar(thA / RAD, rA);
+    ctx.font = FONT(10); ctx.fillStyle = 'rgba(255,215,160,0.5)';                                       // its light-time, like its neighbours
+    ctx.fillText(`${Math.round((t - arecibo) / YR)} years`, EXOTIC.arecibo[0] + 10, EXOTIC.arecibo[1] + 4);
     for (const [w, a] of [[5, 0.12], [1.6, 0.6]]) {
       ctx.lineWidth = w; ctx.strokeStyle = `rgba(255,225,150,${a * (0.8 + 0.2 * Math.sin(sec * 1.7))})`;
       ctx.beginPath(); ctx.arc(cx, cy, rA, -thA - half, -thA + half); ctx.stroke();
@@ -1582,7 +1584,7 @@ function frame() {
     const spot = k => pos[k] || (EXOTIC.hover.find(h => h.key === k) && [EXOTIC.hover.find(h => h.key === k).x, EXOTIC.hover.find(h => h.key === k).y]);
     if (MOUSE.on) for (const k of Object.keys(OBJECT_SOUNDS)) { const P = spot(k); if (P && Math.hypot(P[0] - MOUSE.x, P[1] - MOUSE.y) < (k === 'SGRA' ? 20 : 14)) over = k; }
     if (over && over !== frame.overSound && AUDIO.on) { const P = spot(over); hoverSound(over, P[0], P[1], sec); }
-    const onArecibo = MOUSE.on && EXOTIC.arecibo && Math.hypot(MOUSE.x - EXOTIC.arecibo[0], MOUSE.y - EXOTIC.arecibo[1]) < 16;
+    const onArecibo = MOUSE.on && EXOTIC.arecibo && Math.hypot(MOUSE.x - EXOTIC.arecibo[0], MOUSE.y - EXOTIC.arecibo[1]) < 26;
     if (onArecibo && ARECIBO.start === null) { ARECIBO.start = sec; if (AUDIO.on && AUDIO.ctx) areciboTones(AUDIO.ctx); }
     frame.overSound = over;
     const pl = AUDIO.playing;
@@ -1603,7 +1605,7 @@ function frame() {
     let name = hit && hit.name;
     if (!name && !frame.overSound) {
       const dist = Math.hypot(MOUSE.x - cx, MOUSE.y - cy);
-      if (EXOTIC.arecibo && Math.hypot(MOUSE.x - EXOTIC.arecibo[0], MOUSE.y - EXOTIC.arecibo[1]) < 16 && ARECIBO.start === null)
+      if (EXOTIC.arecibo && Math.hypot(MOUSE.x - EXOTIC.arecibo[0], MOUSE.y - EXOTIC.arecibo[1]) < 26 && ARECIBO.start === null)
         name = `the arecibo message · sent toward M13 in 1974, ${Math.round(EXOTIC.radioYears - 73)} light-years out`;
       else if (EXOTIC.rRadio && Math.abs(dist - EXOTIC.rRadio) < 8)
         name = `our first radio, 1901 · the edge of humanity's signals, ${EXOTIC.radioYears.toFixed(1)} light-years out`;
