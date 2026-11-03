@@ -1,8 +1,44 @@
 # CozySpace
 
+**Live: <https://oyvindsingsaas.github.io/CozySpace/>**
+
 A living desktop background: Earth at the centre, and everything humanity is talking to in space,
 on a log light-time scale out to the edge of the observable universe. Real data, fetched live by
 the browser. Flat-vector, quiet, meant to sit behind your windows (e.g. via [Plash](https://sindresorhus.com/plash) on macOS).
+
+## What you're looking at
+
+Right now, a handful of large dishes in California, Spain and Australia are listening to spacecraft
+scattered across the solar system: rovers on Mars, telescopes a million and a half kilometres out,
+the two Voyagers, close to a light-day away. That's NASA's Deep Space Network, and it publishes
+what every dish is doing, minute by minute. CozySpace draws those conversations as they happen.
+
+**Earth sits in the middle**, as it is this moment: day and night where they really are, city lights
+on the dark side, the aurora over both poles, the ISS passing over. The view is fixed relative to the
+Sun, which always sits to the right, so you watch Earth turn underneath you through the day.
+
+**Everything else is placed in its true direction**, as seen from Earth, and at a distance measured in
+**light-time**: how long a signal takes to get there. The scale is logarithmic, so the Moon (1.3 light-seconds),
+the Sun (8 light-minutes), Saturn (about an hour) and Voyager 1 (almost a full light-day) all fit on one
+screen. Beyond the edge of the Sun's wind, the scale keeps going: the nearest stars (years), the galactic
+centre (26 000 years), Andromeda (2.5 million) and, at the rim, the oldest light there is, the cosmic
+microwave background (13.8 billion).
+
+**The small travelling waves are the actual data.** Each one is a megabyte coming home (amber) or a
+command going out (blue). They move at the speed of light, so the ones from Voyager have been on their
+way for most of a day, and the ones from the Moon arrive almost at once (near Earth they are slowed down
+a little so you can see them). When a dish starts or stops talking to a spacecraft, a ripple goes out.
+
+**The rest of the live world shows up as events:** the Sun flares when the GOES satellites see X-rays
+rise, sunspots drift across its face, and a small rocket climbs from the launch site whenever a real
+launch happens somewhere on Earth.
+
+**And a reminder of how far we've reached:** a faint ring marks how far our very first radio signals
+(Marconi, 1901) have travelled since, about 125 light-years. Hover the Voyagers to hear the Golden Record
+they carry, or the ring to watch the Arecibo message being written out.
+
+Mostly, though, it's meant to be glanced at: a quiet sense that, right now, someone on Earth is listening
+to something very far away.
 
 ## Running it
 
