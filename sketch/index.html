@@ -10,14 +10,24 @@
   :root { --bg:#080a1c; --dim:#7c80a8; }
   html,body { margin:0; height:100%; background:var(--bg); overflow:hidden; }
   canvas { display:block; width:100vw; height:100vh; }
+  #snd { position:fixed; top:22px; right:24px; width:34px; height:34px; border-radius:17px; border:1px solid rgba(160,165,215,.25);
+         background:rgba(12,14,36,.45); color:#a0a5d7; cursor:pointer; opacity:.45; transition:opacity .3s, border-color .3s; padding:0; }
+  #snd:hover { opacity:.95; }
+  #snd.on { opacity:.75; border-color:rgba(255,210,160,.45); color:#ffd9a8; }
+  #snd.wait { animation: breathe 2.4s ease-in-out infinite; }
+  @keyframes breathe { 50% { opacity:.95; border-color:rgba(255,210,160,.6); } }
+  #snd svg { width:16px; height:16px; display:block; margin:auto; }
 </style>
 </head>
 <body>
 <canvas id="c"></canvas>
+<button id="snd" title="sound" aria-label="toggle sound"><svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.8" stroke-linecap="round" stroke-linejoin="round">
+  <path d="M4 9v6h4l5 4V5L8 9H4z"/><path class="w1" d="M16.5 8.5a5 5 0 0 1 0 7"/><path class="w2" d="M19 6a8.5 8.5 0 0 1 0 12"/><path class="x" d="M17 9l5 6M22 9l-5 6" style="display:none"/></svg></button>
 
 <script src="https://cdn.jsdelivr.net/npm/d3@7.9.0/dist/d3.min.js"></script>
 <script src="https://cdn.jsdelivr.net/npm/topojson-client@3.1.0/dist/topojson-client.min.js"></script>
 <script src="https://cdn.jsdelivr.net/npm/satellite.js@5.0.0/dist/satellite.min.js"></script>
+<script src="../data/sounds.js"></script><!-- Golden Record clips etc., from scripts/pack_sounds.py (optional) -->
 <script src="../data/ephemeris.js"></script><!-- JPL Horizons, from scripts/fetch_ephemeris.py (optional: formulas are the fallback) -->
 <script>
 // ======================= data (static snapshot; later the live feed) =======================
@@ -980,6 +990,93 @@ function drawISS(x, y, ang, lit) {
 
 const SMOOTH = {}, SEEN = {}, FIRST = {};
 
+// ======================= sound =======================
+// a generated ambient pad (slow drifting chords, a hush of solar wind) plus recorded clips played on hover,
+// panned to where the object is and set in a soft reverb. off until the speaker button is pressed
+// (browsers only allow sound after a click); the choice is remembered.
+const AUDIO = { ctx: null, on: false, buffers: {}, last: {}, turn: {}, playing: null };
+const OBJECT_SOUNDS = { VGR1: ['motherChild', 'whale'], VGR2: ['whale', 'motherChild'] };   // alternate between these
+const CLIP_TITLES = { motherChild: 'kiss, mother and child', whale: 'humpback whales' };
+const pref = (() => { try { return localStorage.getItem('cozyspace.sound') === 'on'; } catch (e) { return false; } })();
+function savePref(v) { try { localStorage.setItem('cozyspace.sound', v ? 'on' : 'off'); } catch (e) {} }
+function impulse(C, secs, decay) {
+  const n = C.sampleRate * secs, b = C.createBuffer(2, n, C.sampleRate);
+  for (let ch = 0; ch < 2; ch++) { const d = b.getChannelData(ch); for (let i = 0; i < n; i++) d[i] = (Math.random() * 2 - 1) * (1 - i / n) ** decay; }
+  return b;
+}
+function audioInit() {
+  if (AUDIO.ctx) return;
+  const C = AUDIO.ctx = new (window.AudioContext || window.webkitAudioContext)();
+  AUDIO.master = C.createGain(); AUDIO.master.gain.value = 0; AUDIO.master.connect(C.destination);
+  AUDIO.verb = C.createConvolver(); AUDIO.verb.buffer = impulse(C, 4.5, 2.6);
+  const wet = C.createGain(); wet.gain.value = 0.55; AUDIO.verb.connect(wet).connect(AUDIO.master);
+  for (const [k, uri] of Object.entries(window.SOUNDS || {}))
+    fetch(uri).then(r => r.arrayBuffer()).then(b => C.decodeAudioData(b)).then(buf => { AUDIO.buffers[k] = buf; }).catch(() => {});
+  startPad(C);
+}
+function startPad(C) {
+  // the pad: four slow chords (Dmaj9, Bm9, Gmaj9, A add9), each held ~32 s and crossfaded, through a gently
+  // breathing low-pass filter. sine + triangle voices, slightly detuned. nothing loops; it just drifts.
+  const out = C.createGain(); out.gain.value = 0.0001; out.gain.exponentialRampToValueAtTime(0.16, C.currentTime + 10);
+  const lp = C.createBiquadFilter(); lp.type = 'lowpass'; lp.frequency.value = 900; lp.Q.value = 0.4;
+  const lfo = C.createOscillator(), lfoAmt = C.createGain(); lfo.frequency.value = 0.021; lfoAmt.gain.value = 380;
+  lfo.connect(lfoAmt).connect(lp.frequency); lfo.start();
+  lp.connect(out); out.connect(AUDIO.master); out.connect(AUDIO.verb);
+  const hz = n => 440 * 2 ** ((n - 69) / 12);
+  const CHORDS = [[38, 45, 52, 54, 61], [35, 42, 50, 57, 61], [31, 38, 47, 54, 57], [33, 40, 49, 52, 59]];
+  let ci = 0;
+  const play = () => {
+    const t0 = C.currentTime, hold = 32, att = 9, rel = 12;
+    CHORDS[ci++ % CHORDS.length].forEach((n, i) => {
+      for (const [type, det, lvl] of [['sine', -4, 0.11], ['triangle', 4, 0.045]]) {
+        const o = C.createOscillator(), g = C.createGain();
+        o.type = type; o.frequency.value = hz(n); o.detune.value = det + (Math.random() - 0.5) * 3;
+        const v = lvl / (1 + i * 0.35);
+        g.gain.setValueAtTime(0.0001, t0); g.gain.exponentialRampToValueAtTime(v, t0 + att);
+        g.gain.setValueAtTime(v, t0 + hold - 2); g.gain.exponentialRampToValueAtTime(0.0001, t0 + hold + rel);
+        o.connect(g).connect(lp); o.start(t0); o.stop(t0 + hold + rel + 0.5);
+      }
+    });
+  };
+  play(); AUDIO.padTimer = setInterval(play, 32000);
+  // the hush: brown noise, band-passed low, barely there, like the solar wind
+  const n = C.sampleRate * 6, buf = C.createBuffer(1, n, C.sampleRate), d = buf.getChannelData(0);
+  let last = 0; for (let i = 0; i < n; i++) { last = (last + 0.02 * (Math.random() * 2 - 1)) / 1.02; d[i] = last * 3.5; }
+  const src = C.createBufferSource(), bp = C.createBiquadFilter(), ng = C.createGain();
+  src.buffer = buf; src.loop = true; bp.type = 'bandpass'; bp.frequency.value = 320; bp.Q.value = 0.6; ng.gain.value = 0.05;
+  src.connect(bp).connect(ng).connect(AUDIO.master); src.start();
+}
+function setSound(on) {
+  audioInit();
+  AUDIO.on = on; savePref(on);
+  const C = AUDIO.ctx, g = AUDIO.master.gain;
+  if (on) C.resume();
+  g.cancelScheduledValues(C.currentTime); g.setValueAtTime(g.value, C.currentTime); g.linearRampToValueAtTime(on ? 1 : 0, C.currentTime + (on ? 2.5 : 0.8));
+  paintSndButton();
+}
+function paintSndButton() {
+  const b = document.getElementById('snd'); if (!b) return;
+  b.classList.toggle('on', AUDIO.on); b.classList.toggle('wait', !AUDIO.on && pref && !AUDIO.ctx);
+  b.querySelector('.x').style.display = AUDIO.on ? 'none' : ''; for (const w of b.querySelectorAll('.w1,.w2')) w.style.display = AUDIO.on ? '' : 'none';
+}
+document.getElementById('snd').addEventListener('click', e => { e.stopPropagation(); setSound(!AUDIO.on); });
+addEventListener('pointerdown', () => { if (pref && !AUDIO.ctx) setSound(true); }, { once: true });   // sound was on last time: resume on first touch
+paintSndButton();
+function playClip(key, x) {
+  const buf = AUDIO.buffers[key]; if (!AUDIO.on || !buf) return 0;
+  const C = AUDIO.ctx, src = C.createBufferSource(), g = C.createGain(), pan = C.createStereoPanner();
+  src.buffer = buf; g.gain.value = 0.9; pan.pan.value = Math.max(-0.8, Math.min(0.8, (x / W) * 2 - 1));
+  src.connect(g).connect(pan); pan.connect(AUDIO.master); pan.connect(AUDIO.verb); src.start();
+  return buf.duration;
+}
+function hoverSound(key, x, y, sec) {        // on entering an object: its next clip, unless one is still playing
+  const list = (OBJECT_SOUNDS[key] || []).filter(k => AUDIO.buffers[k]);
+  if (!list.length || (AUDIO.playing && sec < AUDIO.playing.until)) return;
+  const i = (AUDIO.turn[key] = ((AUDIO.turn[key] ?? -1) + 1)) % list.length, clip = list[i];
+  const dur = playClip(clip, x);
+  if (dur) AUDIO.playing = { key, clip, until: sec + dur, x, y };
+}
+
 // ======================= frame =======================
 function frame() {
   if (document.hidden) { setTimeout(frame, 1000); return; }      // asleep while nobody can see it
@@ -1413,13 +1510,27 @@ function frame() {
     const up = LAUNCHES.find(L => launchShown(L) && t >= L.t0 && t <= L.t0 + ASCENT_S * 1000);
     if (up) { ctx.fillStyle = 'rgba(220,230,255,0.7)'; ctx.fillText(`a ${up.rocket} is climbing to orbit from ${up.where.toLowerCase()}${up.mission ? ' · ' + up.mission : ''}`, 32, ly); } }
 
+  // ---- hover sounds: entering an object that has sounds plays its next clip
+  {
+    let over = null;
+    if (MOUSE.on) for (const k of Object.keys(OBJECT_SOUNDS)) { const P = pos[k]; if (P && Math.hypot(P[0] - MOUSE.x, P[1] - MOUSE.y) < 14) over = k; }
+    if (over && over !== frame.overSound && AUDIO.on) hoverSound(over, pos[over][0], pos[over][1], sec);
+    frame.overSound = over;
+    const pl = AUDIO.playing;
+    if (pl && sec < pl.until && pos[pl.key]) {                       // a quiet caption under the object while its clip plays
+      const P = pos[pl.key], f = Math.min(1, (pl.until - sec) / 2, (sec - (pl.until - (AUDIO.buffers[pl.clip]?.duration || 1))) / 1);
+      ctx.font = FONT(10); ctx.fillStyle = `rgba(255,215,170,${0.6 * Math.max(0, f)})`; ctx.textAlign = 'center';
+      ctx.fillText('♪ golden record · ' + (CLIP_TITLES[pl.clip] || pl.clip), P[0], P[1] - 14); ctx.textAlign = 'left';
+    }
+  }
+
   // ---- hover: names for the natural world
   if (MOUSE.on) {
     const all = HOVER.concat(EXOTIC.hover);
     let hit = null, best = 1e9;
     for (const h of all) { const dd = Math.hypot(h.x - MOUSE.x, h.y - MOUSE.y); if (dd < h.r && dd < best) { best = dd; hit = h; } }
     let name = hit && hit.name;
-    if (!name) {
+    if (!name && !frame.overSound) {
       const dist = Math.hypot(MOUSE.x - cx, MOUSE.y - cy);
       if (Math.abs(dist - EXOTIC.rHP) < 16) name = 'heliopause · where the sun\'s wind ends';
       else if (dist > EXOTIC.oort[0] && dist < EXOTIC.oort[1]) name = 'oort cloud';
