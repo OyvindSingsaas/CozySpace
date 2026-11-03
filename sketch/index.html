@@ -796,23 +796,78 @@ function drawSun(x, y, t, sec) {
     ctx.fillStyle = 'rgba(60,20,5,0.85)'; ctx.beginPath(); ctx.ellipse(0, 0, rr * 0.5 * Math.max(0.25, mu), rr * 0.5, 0, 0, 6.283); ctx.fill(); // umbra
     ctx.restore();
   }
-  // a flare: brightening at the most active region, scaling with class
+  // a flare: the most active region brightens, plasma loops arch and sway above it, and sparks spray out
+  // along curling field lines. everything scales with class (B ×1, C ×3, M ×9, X ×27 in spark rate)
   const F = flareState(sec);
-  if (F && F.on) {
-    const site = SUNSPOTS.filter(sp => Math.abs(sp.lon - 13.2 * (t - sp.at) / 864e5) < 85).sort((a, b) => b.area - a.area)[0];
-    let fx = x, fy = y;
-    if (site) { const lon = site.lon - 13.2 * (t - site.at) / 864e5;
-      fx = x - Math.sin(lon * RAD) * Math.cos(site.lat * RAD) * SUN_R; fy = y - Math.sin(site.lat * RAD) * SUN_R; }
-    const k = F.strength, L = F.lvl, flick = 0.85 + 0.15 * Math.sin(sec * 7) * Math.sin(sec * 3.1);
-    glow(fx, fy, SUN_R * (0.6 + 0.5 * Math.max(0, L)), '255,250,235', (0.35 + 0.25 * Math.min(1, L)) * k * flick);   // B and up: the region brightens
-    if (L >= 1) glow(fx, fy, SUN_R * (1.4 + 0.6 * (L - 1)), '255,225,170', 0.45 * k * flick);                        // C: a bloom
-    if (L >= 2) {                                                                                                  // M: the whole Sun swells, rings run out
-      glow(x, y, SUN_R * (5 + 3 * (L - 2)), '255,210,150', 0.3 * k);
-      for (const lag of [0, 1.6, 3.2]) { const ph = mod(sec + lag, 4.8) / 4.8;
-        ctx.strokeStyle = `rgba(255,215,160,${0.35 * k * (1 - ph) ** 2})`; ctx.lineWidth = 1.2;
-        ctx.beginPath(); ctx.arc(x, y, SUN_R * (1.3 + 5 * ph), 0, 6.283); ctx.stroke(); }
+  let fx = x, fy = y;
+  const site = SUNSPOTS.filter(sp => Math.abs(sp.lon - 13.2 * (t - sp.at) / 864e5) < 85).sort((a, b) => b.area - a.area)[0];
+  if (site) { const lon = site.lon - 13.2 * (t - site.at) / 864e5;
+    fx = x - Math.sin(lon * RAD) * Math.cos(site.lat * RAD) * SUN_R; fy = y - Math.sin(site.lat * RAD) * SUN_R; }
+  flareDance(x, y, fx, fy, F && F.on ? F : null, sec);
+}
+
+const SPARKS = [];
+const SPARK_COLOURS = [[255, 240, 190], [255, 196, 90], [255, 128, 64], [255, 76, 150], [190, 90, 255], [120, 110, 255]];
+const sparkColour = c => { const f = Math.min(0.999, c) * (SPARK_COLOURS.length - 1), i = Math.floor(f), u = f - i, A = SPARK_COLOURS[i], B = SPARK_COLOURS[i + 1];
+  return A.map((v, j) => Math.round(v + (B[j] - v) * u)).join(','); };
+function flareDance(x, y, fx, fy, F, sec) {
+  const dt = Math.min(0.2, sec - (flareDance.last ?? sec)); flareDance.last = sec;
+  const L = F ? Math.max(0, F.lvl) : 0, k = F ? F.strength : 0;
+  let base = Math.atan2(fy - y, fx - x);
+  if (Math.hypot(fx - x, fy - y) < SUN_R * 0.3) base = sec * 0.2;               // a flare at disc centre sprays every way, slowly turning
+  // emit
+  if (F) {
+    const rate = k * 2.5 * 2.6 ** Math.min(3.5, L);
+    let n = Math.floor(rate * dt + Math.random());
+    while (n-- > 0 && SPARKS.length < 500) SPARKS.push({
+      x: fx, y: fy, trail: [], a: base + (Math.random() - 0.5) * 2.0,
+      v: (9 + Math.random() * 14) * (1 + 0.45 * L), age: 0, life: (3 + Math.random() * 3) * (1 + 0.25 * L),
+      curl: (Math.random() - 0.5) * 1.6, wob: 0.6 + Math.random() * 0.8, f: 1.6 + Math.random() * 2.2, w: Math.random() * 6.28 });
+  }
+  if (!SPARKS.length && !F) return;
+  ctx.save(); ctx.globalCompositeOperation = 'lighter'; ctx.lineCap = 'round';
+  // loops: arcs between two footpoints near the region, breathing in height, with a bright knot running along them
+  if (F) {
+    const nl = 1 + Math.floor(Math.min(3.5, L) * 1.6);
+    for (let j = 0; j < nl; j++) {
+      const sp = 0.28 + 0.12 * j, a1 = base + Math.PI / 2, ox = Math.cos(a1) * SUN_R * sp, oy = Math.sin(a1) * SUN_R * sp;
+      const h = SUN_R * (0.7 + 0.45 * L) * (0.7 + 0.3 * Math.sin(sec * (1.1 + 0.3 * j) + j * 2)) * (1 + 0.25 * j);
+      const sw = 0.35 * Math.sin(sec * 0.8 + j * 1.7);                          // sway
+      const c1 = [fx - ox, fy - oy], c2 = [fx + ox, fy + oy];
+      const ctrl = [fx + Math.cos(base + sw) * h * 2, fy + Math.sin(base + sw) * h * 2];
+      for (const [w, a, rgb] of [[5, 0.16, '255,90,120'], [2.4, 0.3, '255,150,80'], [1, 0.75, '255,225,170']]) {
+        ctx.strokeStyle = `rgba(${rgb},${a * (0.4 + 0.6 * k)})`; ctx.lineWidth = w;
+        ctx.beginPath(); ctx.moveTo(...c1); ctx.quadraticCurveTo(...ctrl, ...c2); ctx.stroke();
+      }
+      const u = mod(sec * (0.35 + 0.1 * j) + j * 0.37, 1), kn = qAt([c1, ctrl, c2], u);
+      glow(kn[0], kn[1], 3 + L, '255,235,200', 0.6 * k);
     }
-    if (L >= 3) glow(x, y, SUN_R * 14, '255,240,220', 0.25 * k * flick);                                          // X: a flash
+  }
+  // sparks: move outward, curling (a slow spiral plus a wobble), cooling in colour as they age
+  for (let i = SPARKS.length - 1; i >= 0; i--) {
+    const p = SPARKS[i];
+    p.age += dt;
+    if (p.age > p.life) { SPARKS.splice(i, 1); continue; }
+    // a slow spiral (curl) plus a sinuous wobble: each spark swims rather than flies
+    const ang = p.a + p.curl * p.age * 0.7 + p.wob * Math.sin(p.age * p.f + p.w), v = p.v * (1 - 0.4 * p.age / p.life);
+    p.trail.push([p.x, p.y]); if (p.trail.length > 9) p.trail.shift();
+    p.x += Math.cos(ang) * v * dt; p.y += Math.sin(ang) * v * dt;
+    const c = p.age / p.life, col = sparkColour(c), fade = Math.min(1, p.age * 3) * (1 - c) ** 1.1;
+    ctx.lineWidth = 1.1;
+    for (let j = 1; j < p.trail.length; j++) {
+      ctx.strokeStyle = `rgba(${col},${0.7 * fade * j / p.trail.length})`;
+      ctx.beginPath(); ctx.moveTo(...p.trail[j - 1]); ctx.lineTo(...p.trail[j]); ctx.stroke();
+    }
+    glow(p.x, p.y, 3.2, col, 0.55 * fade); dot(p.x, p.y, 0.8, `rgba(255,245,230,${0.8 * fade})`);
+  }
+  ctx.restore();
+  // the region and the Sun brighten underneath it all
+  if (F) {
+    const flick = 0.85 + 0.15 * Math.sin(sec * 7) * Math.sin(sec * 3.1);
+    glow(fx, fy, SUN_R * (0.6 + 0.5 * L), '255,250,235', (0.35 + 0.25 * Math.min(1, L)) * k * flick);
+    if (L >= 1) glow(fx, fy, SUN_R * (1.4 + 0.6 * (L - 1)), '255,190,150', 0.4 * k * flick);
+    if (L >= 2) glow(x, y, SUN_R * (5 + 3 * (L - 2)), '255,190,160', 0.25 * k);
+    if (L >= 3) glow(x, y, SUN_R * 14, '255,230,215', 0.22 * k * flick);
   }
 }
 
