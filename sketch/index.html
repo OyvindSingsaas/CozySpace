@@ -1069,7 +1069,7 @@ const CLIP_TITLES = { motherChild: 'golden record · kiss, mother and child', he
   perseus: 'the black hole in the perseus cluster, as sound · NASA/CXC/SAO',
   mars: 'sound on mars · perseverance\'s microphone', moonStep: 'apollo 11 · one small step, 20 july 1969',
   marconi: 'marconi, 12 dec 1901 · the letter S in morse ( · · · ), re-created' };
-const pref = (() => { try { return localStorage.getItem('cozyspace.sound') === 'on'; } catch (e) { return false; } })();
+const pref = (() => { try { return localStorage.getItem('cozyspace.sound') !== 'off'; } catch (e) { return true; } })();   // on unless turned off
 function savePref(v) { try { localStorage.setItem('cozyspace.sound', v ? 'on' : 'off'); } catch (e) {} }
 function impulse(C, secs, decay) {
   const n = C.sampleRate * secs, b = C.createBuffer(2, n, C.sampleRate);
@@ -1138,11 +1138,23 @@ function setSound(on) {
 }
 function paintSndButton() {
   const b = document.getElementById('snd'); if (!b) return;
-  b.classList.toggle('on', AUDIO.on); b.classList.toggle('wait', !AUDIO.on && pref && !AUDIO.ctx);
+  b.classList.toggle('on', AUDIO.on); b.classList.toggle('wait', !AUDIO.on && !!AUDIO.waiting);
   b.querySelector('.x').style.display = AUDIO.on ? 'none' : ''; for (const w of b.querySelectorAll('.w1,.w2')) w.style.display = AUDIO.on ? '' : 'none';
 }
-document.getElementById('snd').addEventListener('click', e => { e.stopPropagation(); setSound(!AUDIO.on); });
-addEventListener('pointerdown', () => { if (pref && !AUDIO.ctx) setSound(true); }, { once: true });   // sound was on last time: resume on first touch
+document.getElementById('snd').addEventListener('click', e => { e.stopPropagation(); AUDIO.waiting = false; setSound(!AUDIO.on); });
+// sound is on by default. browsers only let a page make sound after the visitor interacts with it, so: try at once
+// (some allow it, e.g. a site you visit often, or a desktop-wallpaper app), otherwise start on the first click or key
+if (pref) {
+  audioInit();
+  const go = () => { if (AUDIO.waiting) { AUDIO.waiting = false; setSound(true); } };
+  if (AUDIO.ctx.state === 'running') setSound(true);
+  else {
+    AUDIO.waiting = true;
+    AUDIO.ctx.onstatechange = () => { if (AUDIO.ctx.state === 'running') go(); };
+    for (const ev of ['pointerdown', 'keydown', 'touchstart'])
+      addEventListener(ev, e => { if (!(e.target.closest && e.target.closest('#snd'))) go(); }, { once: true, capture: true });
+  }
+}
 paintSndButton();
 // Marconi, 12 Dec 1901: the first transatlantic radio signal was the letter S in Morse (· · ·), sent again and
 // again from Poldhu and heard as faint clicks at Signal Hill. no recording exists, so this is a re-creation: the

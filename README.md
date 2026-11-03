@@ -49,7 +49,7 @@ images). Serve the repo folder instead:
 cd ~/"Documents/Private/Kode prosjekt/CozySpace" && python3 -m http.server 8000
 ```
 
-then open <http://localhost:8000/sketch/>. Click the speaker (bottom corner) to turn sound on.
+then open <http://localhost:8000/sketch/>. Sound is on by default: it starts as soon as the browser allows (usually your first click or key press). The speaker button (top right) turns it off, and that choice is remembered.
 
 URL options: `?fps=` (default 24), `?speed=`, `?offset=` (minutes), `?vmax=` (packet speed cap, px/s),
 `?mb=` (MB per packet). Demos: `?ripples`, `?flare=M2.4`, `?launch`, `?nova`.
@@ -147,7 +147,7 @@ Also shown, not on the DSN: the ISS, rockets on their way up, and the planets, M
 
 ## Sound
 
-Off until the speaker is clicked (choice remembered). One sound at a time; moving away stops it.
+On by default, starting at the first click or key press (browsers block sound before that); the speaker button turns it off, remembered. One sound at a time; moving away stops it.
 
 | Object | Sound | File | Credit |
 |---|---|---|---|
