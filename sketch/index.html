@@ -113,6 +113,7 @@ const RIPPLES = [];                            // short-lived rings where someth
 function ingest(list, quiet = false) {
   DISHES = list;
   const before = new Set([...LINKS].filter(([, L]) => L.want).map(([k]) => k));
+  const prevTarget = Object.fromEntries((ingest.prev || []).map(d => [d.dish, d.target])); ingest.prev = list;
   for (const L of LINKS.values()) L.want = 0;
   for (const d of list) {
     if (!d.signals.length || !d.target || NOT_CRAFT.has(d.target)) continue;
@@ -121,6 +122,8 @@ function ingest(list, quiet = false) {
   }
   if (quiet) return;
   const t0 = (Date.now() - T0) / 1000;
+  for (const d of list) if (prevTarget[d.dish] !== undefined && prevTarget[d.dish] !== d.target)
+    RIPPLES.push({ kind: 'slew', station: d.station, dish: d.dish, target: null, t0 });     // a dish swinging to a new target
   for (const [k, L] of LINKS) {
     if (L.want && !before.has(k)) RIPPLES.push({ kind: 'start', station: L.station, target: L.target, t0 });
     if (!L.want && before.has(k)) RIPPLES.push({ kind: 'end', station: L.station, target: L.target, t0 });
@@ -143,7 +146,8 @@ async function pollDSN() {
           .map(c => ({ dir: c.tagName === 'upSignal' ? 'up' : 'down', rate: +c.getAttribute('dataRate') || 0,
                        power: +c.getAttribute('power') || 0, band: c.getAttribute('band') }));
         list.push({ station: st, dish: e.getAttribute('name'), target: t ? t.getAttribute('name').toUpperCase() : '',
-                    rtlt: t ? +t.getAttribute('rtlt') : -1, signals });
+                    rtlt: t ? +t.getAttribute('rtlt') : -1, signals,
+                    az: +e.getAttribute('azimuthAngle') || 0, el: e.getAttribute('elevationAngle') === '' ? 90 : +e.getAttribute('elevationAngle') });
       }
     }
     if (list.length) { ingest(list, LIVE_FETCHES++ === 0); FEED = { live: true, at: Date.now() }; }   // the first live read only sets the scene
@@ -601,6 +605,43 @@ function pulse(q, u, dirSign, rgb, a, vpx, sec) {
 }
 
 // a little deep-space antenna: pedestal, tilted parabolic bowl, feed struts, blinking activity light
+// pointing: the feed gives each dish's azimuth (from north, clockwise) and elevation above the horizon.
+// we build that vector in Earth-fixed 3D (east/north/up at the station), rotate it with the globe and
+// project it: its on-screen direction aims the bowl, and how much it points at us sets how round the bowl looks
+const SLEW = { DSS14: 0.25, DSS43: 0.25, DSS63: 0.25 };            // deg/s; 70 m dishes are slower
+const DISH_STATE = {};
+function viewDir(rot, v) {                      // Earth-fixed unit vector -> [screen x, screen y (down), toward viewer]
+  const lon = Math.atan2(v[1], v[0]) / RAD, lat = Math.asin(Math.max(-1, Math.min(1, v[2]))) / RAD;
+  const [l, f] = rot([lon, lat]).map(a => a * RAD);
+  return [Math.cos(f) * Math.sin(l), -Math.sin(f), Math.cos(f) * Math.cos(l)];
+}
+function pointing([lon, lat], az, el) {
+  const L = lon * RAD, F = lat * RAD, A = az * RAD, E = el * RAD;
+  const U = [Math.cos(F) * Math.cos(L), Math.cos(F) * Math.sin(L), Math.sin(F)];
+  const Ea = [-Math.sin(L), Math.cos(L), 0], N = [-Math.sin(F) * Math.cos(L), -Math.sin(F) * Math.sin(L), Math.cos(F)];
+  return [0, 1, 2].map(i => Math.cos(E) * Math.sin(A) * Ea[i] + Math.cos(E) * Math.cos(A) * N[i] + Math.sin(E) * U[i]);
+}
+function drawPointedDish(x, y, up, aim, on, sec, sc = 0.62) {
+  const ua = Math.atan2(up[1], up[0]);
+  ctx.save(); ctx.translate(x, y); ctx.rotate(ua + Math.PI / 2); ctx.scale(sc, sc);
+  ctx.fillStyle = '#c7ad80'; ctx.beginPath(); ctx.ellipse(0, 0, 4.2, 1.3, 0, 0, 6.283); ctx.fill();          // footing
+  ctx.fillStyle = '#e8d3a6'; ctx.beginPath(); ctx.moveTo(-2.6, 0); ctx.lineTo(2.6, 0); ctx.lineTo(1.2, -4.6); ctx.lineTo(-1.2, -4.6); ctx.closePath(); ctx.fill();
+  ctx.restore();
+  const px = x + up[0] * 5.4 * sc, py = y + up[1] * 5.4 * sc;                 // the bowl's pivot, atop the pedestal
+  const along = Math.hypot(aim[0], aim[1]), face = Math.min(1, Math.abs(aim[2]));
+  const ang = along > 0.05 ? Math.atan2(aim[1], aim[0]) : ua;
+  ctx.save(); ctx.translate(px, py); ctx.rotate(ang + Math.PI / 2); ctx.scale(sc, sc);
+  const ry = 1.4 + 4.4 * face, toward = aim[2] >= 0;                         // rounder when it looks at (or away from) us
+  ctx.fillStyle = '#d9c39a'; ctx.beginPath(); ctx.ellipse(0, -0.6, 6.4, 4.4 * (1 - 0.6 * face), 0, 0, Math.PI); ctx.fill();   // back of the bowl
+  ctx.fillStyle = toward ? '#fff3d6' : '#cdb68c'; ctx.beginPath(); ctx.ellipse(0, -0.6, 6.4, ry, 0, 0, 6.283); ctx.fill();   // face (or back, if it looks away)
+  ctx.strokeStyle = 'rgba(160,130,90,0.6)'; ctx.lineWidth = 0.4; ctx.stroke();
+  const fl = 7 * Math.max(0.25, along);                                       // feed struts, foreshortened
+  ctx.strokeStyle = '#efe0c0'; ctx.lineWidth = 0.6;
+  ctx.beginPath(); ctx.moveTo(-5, -0.9); ctx.lineTo(0, -fl); ctx.lineTo(5, -0.9); ctx.moveTo(0, -0.6); ctx.lineTo(0, -fl); ctx.stroke();
+  ctx.fillStyle = '#fff6e2'; ctx.beginPath(); ctx.arc(0, -fl - 0.2, 0.9, 0, 6.283); ctx.fill();
+  ctx.restore();
+  if (on) { const b = 0.5 + 0.5 * Math.sin(sec * 3); glow(px, py, 5, '255,170,90', 0.45 * b); dot(px, py, 0.9, `rgba(255,200,130,${0.5 + 0.5 * b})`); }
+}
 function drawDish(x, y, rot, on, sec) {
   ctx.save(); ctx.translate(x, y); ctx.rotate(rot); ctx.scale(1.25, 1.25);
   ctx.lineJoin = 'round';
@@ -730,7 +771,7 @@ function drawPlanet(k, x, y, lit, sun) {
 
 // the ISS, in its iconic shape: a long truss with four pairs of golden solar wings, modules and radiators in the middle
 function drawISS(x, y, ang, lit) {
-  ctx.save(); ctx.translate(x, y); ctx.rotate(ang); ctx.scale(1.15, 1.15);
+  ctx.save(); ctx.translate(x, y); ctx.rotate(ang); ctx.scale(0.8, 0.8);
   const a = lit ? 1 : 0.45;
   ctx.globalAlpha = a;
   ctx.fillStyle = '#d9a03c'; ctx.strokeStyle = 'rgba(90,55,20,0.6)'; ctx.lineWidth = 0.25;
@@ -886,7 +927,12 @@ function frame() {
 
   // ---- stations: little dishes on the near side; far-side stations emit from the limb
   const active = d => d.signals.length > 0;
-  const stPos = {};
+  const stPos = {}, dishPos = {}, rotG = d3.geoRotation(p.rotate());
+  for (const d of DISHES) {                     // ease each dish toward its reported pointing, at a slew rate
+    const st = DISH_STATE[d.dish] || (DISH_STATE[d.dish] = { az: d.az ?? 0, el: d.el ?? 90 });
+    const rate = (SLEW[d.dish] || 0.8) * dt * SPEED, daz = mod((d.az ?? st.az) - st.az + 180, 360) - 180, del = (d.el ?? st.el) - st.el;
+    st.az = mod(st.az + Math.sign(daz) * Math.min(Math.abs(daz), rate), 360); st.el += Math.sign(del) * Math.min(Math.abs(del), rate);
+  }
   for (const [name, ll] of Object.entries(STATIONS)) {
     const dd = d3.geoDistance(p.center_, ll), hidden = dd > Math.PI / 2 - 0.01;
     const pt = p(hidden ? d3.geoInterpolate(p.center_, ll)((Math.PI / 2 - 0.005) / dd) : ll);
@@ -894,8 +940,15 @@ function frame() {
     stPos[name] = { pt, hidden };
     const ux = pt[0] - cx, uy = pt[1] - cy, ul = Math.hypot(ux, uy) || 1, nx = ux / ul, ny = uy / ul;
     if (!hidden) {
-      glow(pt[0], pt[1], 16, '255,210,122', 0.14 + 0.05 * nOn);
-      drawDish(pt[0], pt[1], Math.atan2(ny, nx) + Math.PI / 2, nOn > 0, sec);
+      glow(pt[0], pt[1], 18, '255,210,122', 0.12 + 0.04 * nOn);
+      const up = viewDir(rotG, pointing(ll, 0, 90)), mine = DISHES.filter(d => d.station === name);
+      const tx = -up[1], ty = up[0], tl = Math.hypot(tx, ty) || 1;                // along the surface, for spacing the dishes out
+      mine.forEach((d, i) => {
+        const off = (i - (mine.length - 1) / 2) * 8.5, x = pt[0] + tx / tl * off, y = pt[1] + ty / tl * off;
+        const S0 = DISH_STATE[d.dish], aim = viewDir(rotG, pointing(ll, S0.az, S0.el));
+        dishPos[d.dish] = [x, y];
+        drawPointedDish(x, y, [up[0], up[1]], aim, active(d) && !NOT_CRAFT.has(d.target), sec);
+      });
       ctx.font = FONT(10); ctx.fillStyle = 'rgba(255,225,170,0.7)';
       ctx.textAlign = nx < 0 ? 'right' : 'left';
       ctx.fillText(name.toLowerCase(), pt[0] + (nx < 0 ? -10 : 10) + nx * 6, pt[1] + 14 + ny * 6);
@@ -961,8 +1014,9 @@ function frame() {
   for (let i = RIPPLES.length - 1; i >= 0; i--) {
     const e = RIPPLES[i], tau = sec - e.t0;
     if (tau > 4) { RIPPLES.splice(i, 1); continue; }
-    const rgb = e.kind === 'start' ? '255,205,150' : '150,175,230';
-    const spots = [pos[e.target], stPos[e.station] && !stPos[e.station].hidden ? stPos[e.station].pt : null];
+    const rgb = e.kind === 'start' ? '255,205,150' : e.kind === 'slew' ? '225,230,255' : '150,175,230';
+    const home = e.dish && dishPos[e.dish] ? dishPos[e.dish] : stPos[e.station] && !stPos[e.station].hidden ? stPos[e.station].pt : null;
+    const spots = [e.target ? pos[e.target] : null, home];
     for (const P of spots) {
       if (!P) continue;
       for (const lag of [0, 0.7, 1.4]) {
