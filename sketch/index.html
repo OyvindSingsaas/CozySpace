@@ -48,6 +48,7 @@ function bearing([lo1, la1], [lo2, la2]) {
   return mod(Math.atan2(Math.sin(dl) * Math.cos(p2), Math.cos(p1) * Math.sin(p2) - Math.sin(p1) * Math.cos(p2) * Math.cos(dl)) / RAD, 360);
 }
 async function pollAurora() {
+  if (document.hidden) { setTimeout(pollAurora, 10000); return; }
   try {
     const j = await (await fetch('https://services.swpc.noaa.gov/json/ovation_aurora_latest.json')).json();
     const NB = 120, mk = () => ({ w: new Float64Array(NB), rw: new Float64Array(NB), max: new Float64Array(NB) });
@@ -72,7 +73,7 @@ async function pollAurora() {
     }
     AURORA = { ...out, at: j['Observation Time'] };
   } catch (e) { /* keep the model oval */ }
-  setTimeout(pollAurora, 10 * 60 * 1000);
+  setTimeout(pollAurora, 30 * 60 * 1000);
 }
 pollAurora();
 
@@ -90,6 +91,7 @@ function ingest(list) {
 }
 ingest(SNAP);
 async function pollDSN() {
+  if (document.hidden) { setTimeout(pollDSN, 5000); return; }
   try {
     const r = await fetch('https://eyes.nasa.gov/dsn/data/dsn.xml?r=' + Date.now());
     const x = new DOMParser().parseFromString(await r.text(), 'text/xml'), list = [];
@@ -108,7 +110,7 @@ async function pollDSN() {
     }
     if (list.length) { ingest(list); FEED = { live: true, at: Date.now() }; }
   } catch (e) { FEED.live = false; }
-  setTimeout(pollDSN, 10000);
+  setTimeout(pollDSN, 30000);
 }
 fetch('https://eyes.nasa.gov/dsn/config.xml').then(r => r.text()).then(t => {
   for (const sc of new DOMParser().parseFromString(t, 'text/xml').querySelectorAll('spacecraft'))
@@ -122,6 +124,7 @@ const GEOMAG_N = [-72.6, 80.8], GEOMAG_S = [107.4, -80.8];
 const params = new URLSearchParams(location.search);
 const SPEED = +params.get('speed') || 1;
 const T0 = Date.now();
+const FPS = +params.get('fps') || 15;
 const now = () => T0 + (Date.now() - T0) * SPEED;
 const J2000 = 946728000000, RAD = Math.PI / 180, C_KMS = 299792.458, AU = 1.495978707e8;
 const mod = (a, m) => ((a % m) + m) % m;
@@ -188,7 +191,8 @@ function sky(t, s) {
 }
 
 // ======================= layout =======================
-const cv = document.getElementById('c'), ctx = cv.getContext('2d');
+const cv = document.getElementById('c'), MAIN = cv.getContext('2d');
+let ctx = MAIN;                                 // swapped while painting cached layers
 let W, H, R, cx, cy, DPR;
 const WEDGE = [3, 52];                          // screen angles for the sky (deg, ccw from +x)
 let R0, RMAX, BACKDROP, STARS = [], EXOTIC = {};
@@ -366,16 +370,53 @@ function buildBackdrop(ls = sun(now()).lam) {
     }
   });
 
-  // stars: sparse in the sunlit inner system, denser and more colourful with distance
+  // stars: sparse in the sunlit inner system, denser and more colourful with distance.
+  // most are painted here once; one in ten twinkles live
   const pal = ['232,230,255', '232,230,255', '170,200,255', '255,214,175', '255,180,200'];
   STARS = [];
   for (let i = 0; i < 1400; i++) {
     const x = r() * W, y = r() * H, f = (Math.hypot(x - cx, y - cy) - R0) / (RMAX - R0);
     if (r() > 0.18 + 0.82 * Math.min(1, Math.max(0, f)) ** 1.6) continue;
     const far = f > 1;
-    STARS.push({ x, y, s: 0.3 + r() * r() * (far ? 1.8 : 1.3), a: (far ? 0.25 : 0.12) + r() * 0.5,
-      tw: r() * 6.28, rgb: far ? pal[Math.floor(r() * pal.length)] : pal[0] });
+    const st = { x, y, s: 0.3 + r() * r() * (far ? 1.8 : 1.3), a: (far ? 0.25 : 0.12) + r() * 0.5,
+      tw: r() * 6.28, rgb: far ? pal[Math.floor(r() * pal.length)] : pal[0] };
+    if (r() < 0.1) STARS.push(st);
+    else { b.globalAlpha = st.a * 0.85; b.fillStyle = `rgb(${st.rgb})`; b.beginPath(); b.arc(x, y, st.s, 0, 6.283); b.fill(); }
   }
+  b.globalAlpha = 1;
+  // ---- distance as dust: slow drifting motes at 1 light-second / minute / hour / day
+  for (const [ri, ring] of RINGS.entries()) {
+    // full circle (so no sector edges), patchy like drifting clouds, wider spread farther out
+    const rr = rOf(ring.d), n = Math.round(rr * 6.283 * 0.22), drift = 0 * (1.2 - logFrac(ring.d));
+    const spread = 3 + rr * 0.03;
+    for (let k = 0; k < n; k++) {
+      const a0 = 6.283 * (k + 0.5 * Math.sin(k * 12.9898)) / n;
+      const patch = 0.5 + 0.5 * Math.sin(3 * a0 + ri * 1.9) * Math.sin(5 * a0 - ri + 0);
+      if (mod(Math.sin(k * 78.233) * 43758.5453, 1) > 0.15 + 0.85 * patch) continue;
+      const a = a0 + drift * (k % 2 ? 1 : -0.6);
+      const jr = rr + spread * (Math.sin(k * 7.13 + 0) * 0.7 + Math.sin(k * 3.7) * 0.5);
+      const x = cx + jr * Math.cos(a), y = cy - jr * Math.sin(a);
+      if (x < 0 || x > W || y < 0 || y > H || (x < 400 && y < 100)) continue;   // keep the header clear
+      b.fillStyle = `rgba(${ring.rgb},${0.22 + 0.3 * Math.sin(0 + k * 1.7) ** 2})`;
+      b.beginPath(); b.arc(x, y, 0.7 + (k % 3) * 0.4, 0, 6.283); b.fill();
+    }
+  }
+
+  // ---- heliopause: a wavering violet veil
+  {
+    const rH = rHP, n = Math.round(rH * 0.5);
+    b.lineWidth = 26; b.strokeStyle = 'rgba(160,110,255,0.035)';
+    b.beginPath(); b.arc(cx, cy, rH, 0, 6.283); b.stroke();
+    for (let k = 0; k < n * 3.4; k++) {
+      const a = 6.283 * k / (n * 3.4);
+      const jr = rH + 7 * Math.sin(3 * a + 0) + 4 * Math.sin(13 * a - 0) + 9 * Math.sin(k * 91.7);
+      const x = cx + jr * Math.cos(a), y = cy - jr * Math.sin(a);
+      if (x < 0 || x > W || y < 0 || y > H) continue;
+      b.fillStyle = `rgba(${k % 3 ? '175,120,255' : '255,130,210'},${0.1 + 0.18 * Math.sin(5 * a + 0 + k) ** 2})`;
+      b.beginPath(); b.arc(x, y, 0.7, 0, 6.283); b.fill();
+    }
+  }
+
 }
 // [lon, lat, metro population in millions] — the brightest lights on the night side
 const CITIES = [[139.69,35.69,37],[77.21,28.61,32],[121.47,31.23,28],[90.41,23.81,23],[-46.63,-23.55,22],[-99.13,19.43,22],[31.24,30.04,22],[116.41,39.9,21],[72.88,19.08,21],[135.5,34.69,19],[106.55,29.56,17],[67.01,24.86,17],[15.27,-4.44,17],[3.38,6.52,16],[28.98,41.01,16],[-58.38,-34.6,15],[88.36,22.57,15],[120.98,14.6,15],[113.26,23.13,14],[117.36,39.34,14],[74.36,31.52,14],[-43.17,-22.91,14],[77.59,12.97,13],[114.06,22.54,13],[37.62,55.76,12.6],[80.27,13.08,12],[-74.07,4.71,11],[2.35,48.86,11],[106.85,-6.21,11],[-77.04,-12.05,11],[100.5,13.76,11],[78.49,17.39,10.5],[126.98,37.57,10],[136.91,35.18,9.5],[-0.13,51.51,9.5],[104.07,30.57,9.5],[51.39,35.69,9.4],[118.8,32.06,9.4],[106.63,10.82,9],[13.23,-8.84,9],[114.31,30.59,8.6],[108.94,34.34,8.5],[72.57,23.02,8.5],[101.69,3.14,8.4],[-74.01,40.71,18.8],[114.17,22.32,7.6],[120.16,30.27,8],[46.68,24.71,7.5],[44.36,33.31,7.5],[-70.67,-33.45,6.9],[72.83,21.17,7.8],[-3.7,40.42,6.7],[120.58,31.3,7.4],[73.86,18.52,7],[126.53,45.8,6.5],[-95.37,29.76,7],[-96.8,32.78,7.5],[-79.38,43.65,6.4],[39.28,-6.79,7.4],[-80.19,25.76,6.1],[-43.94,-19.92,6.1],[103.82,1.35,6],[-75.17,39.95,6.2],[-84.39,33.75,6.1],[130.4,33.59,5.5],[32.56,15.5,6],[2.17,41.39,5.6],[28.05,-26.2,6],[30.34,59.93,5.5],[120.38,36.07,6],[121.61,38.91,5.5],[-77.04,38.91,5.4],[96.2,16.87,5.6],[29.92,31.2,5.5],[117.12,36.65,6],[-103.35,20.66,5.3],[-118.24,34.05,12.5],[-87.63,41.88,8.9],[-122.42,37.77,4.7],[-122.33,47.61,4],[-112.07,33.45,4.9],[-71.06,42.36,4.9],[-73.57,45.5,4.3],[-123.12,49.28,2.6],[-104.99,39.74,2.9],[-93.27,44.98,3.7],[-100.31,25.69,5.3],[-82.37,23.11,2.1],[-66.9,10.48,3],[-78.47,-0.18,2],[-47.88,-15.79,4.8],[-51.23,-30.03,4.3],[-34.88,-8.05,4.2],[-56.16,-34.9,1.8],[13.4,52.52,3.6],[12.5,41.9,4.3],[9.19,45.46,3.1],[23.73,37.98,3.2],[30.52,50.45,3],[21.01,52.23,1.8],[16.37,48.21,1.9],[4.9,52.37,2.4],[4.35,50.85,2.1],[7,51.45,5],[9.99,53.55,1.8],[11.58,48.14,1.5],[18.07,59.33,1.6],[10.75,59.91,1.1],[12.57,55.68,1.4],[24.94,60.17,1.3],[10.39,63.43,0.3],[-9.14,38.72,2.9],[-2.24,53.48,2.8],[-6.26,53.35,1.4],[19.04,47.5,1.8],[26.1,44.43,1.8],[32.85,39.93,5.5],[34.78,32.09,4],[55.27,25.2,3.5],[47.98,29.37,3],[-7.59,33.57,4],[3.06,36.75,3],[10.18,36.81,2],[-0.19,5.6,2.6],[-4.01,5.36,5.5],[-17.47,14.72,3.3],[38.76,9.03,5],[36.82,-1.29,5],[32.58,0.35,3.6],[18.42,-33.92,4.8],[31.02,-29.86,3.2],[47.52,-18.88,3.6],[151.21,-33.87,5.3],[144.96,-37.81,5.1],[153.03,-27.47,2.5],[115.86,-31.95,2.1],[138.6,-34.93,1.4],[174.76,-36.85,1.7],[121.57,25.03,7],[129.08,35.18,3.4],[141.35,43.06,2.6],[105.85,21.03,5],[104.92,11.56,2.2],[69.18,34.56,4.5],[69.24,41.3,2.6],[76.89,43.24,2],[82.92,55.03,1.6],[60.6,56.84,1.5],[131.89,43.12,0.6],[106.92,47.89,1.6],[79.86,6.93,2.3],[85.32,27.72,1.5],[73.05,33.68,2],[75.79,26.91,4],[80.95,26.85,3.8],[85.14,25.59,2.5],[-149.9,61.22,0.3],[-21.94,64.15,0.2],[-157.86,21.31,1],[-113.49,53.55,1.4],[-114.07,51.05,1.5],[-97.14,49.9,0.8],[-90.07,29.95,1.3],[-115.14,36.17,2.3],[-117.16,32.72,3.3],[-111.89,40.76,1.2],[-94.58,39.1,2.2],[-90.2,38.63,2.8],[-83.05,42.33,4.3],[-81.69,41.5,2],[-80,40.44,2.4],[-80.84,35.23,2.7],[-86.78,36.16,2],[-82.46,27.95,3.2],[-122.68,45.52,2.5]];
@@ -392,7 +433,7 @@ const LIGHTS = (() => { const r = rng(5), out = [];
 const CLOUDS = (() => { const r = rng(21), out = [];
   for (let i = 0; i < 46; i++) {
     const band = r(), lat = band < 0.35 ? (r() - 0.5) * 16 + 4 : (r() < 0.5 ? 1 : -1) * (40 + r() * 22);
-    const lon = r() * 360 - 180, n = 2 + Math.floor(r() * 4), speed = band < 0.35 ? -0.05 : 0.09 + r() * 0.06;
+    const lon = r() * 360 - 180, n = 2 + Math.floor(r() * 4), speed = band < 0.35 ? -0.02 : 0.035 + r() * 0.025;
     for (let j = 0; j < n * 3; j++) out.push({ lon: lon + (r() - 0.5) * 14, lat: lat + (r() - 0.5) * 4, rad: 0.8 + r() * 2.6, speed, a: 0.07 + r() * 0.11 });
   }
   return out; })();
@@ -413,16 +454,26 @@ const BIOMES = [
 const BIOME_BLOBS = BLOBS(BIOMES, 31);
 let LAND = null;
 fetch('https://cdn.jsdelivr.net/npm/world-atlas@2.0.2/land-110m.json').then(r => r.json())
-  .then(topo => { LAND = topojson.feature(topo, topo.objects.land); });
+  .then(topo => { LAND = topojson.feature(topo, topo.objects.land); GLOBE.at = -1e9; });   // repaint the globe once coastlines arrive
 
 const FONT = (px, w = 400) => `${w} ${px}px 'Space Grotesk',system-ui,sans-serif`;
 const lightTime = d => { const s = d / C_KMS;
   return s < 60 ? `${s.toFixed(1)} s` : s < 3600 ? `${Math.round(s / 60)} min`
     : `${Math.floor(s / 3600)} h ${String(Math.floor(s / 60) % 60).padStart(2, '0')} min`; };
 const dot = (x, y, r, col) => { ctx.fillStyle = col; ctx.beginPath(); ctx.arc(x, y, r, 0, 6.283); ctx.fill(); };
-const glow = (x, y, r, rgb, a) => { const g = ctx.createRadialGradient(x, y, 0, x, y, r);
-  g.addColorStop(0, `rgba(${rgb},${a})`); g.addColorStop(1, `rgba(${rgb},0)`);
-  ctx.fillStyle = g; ctx.beginPath(); ctx.arc(x, y, r, 0, 6.283); ctx.fill(); };
+const SPRITES = new Map();
+function sprite(rgb) {
+  let c = SPRITES.get(rgb);
+  if (!c) {
+    c = document.createElement('canvas'); c.width = c.height = 128;
+    const g2 = c.getContext('2d'), gr = g2.createRadialGradient(64, 64, 0, 64, 64, 64);
+    gr.addColorStop(0, `rgba(${rgb},1)`); gr.addColorStop(1, `rgba(${rgb},0)`);
+    g2.fillStyle = gr; g2.fillRect(0, 0, 128, 128); SPRITES.set(rgb, c);
+  }
+  return c;
+}
+const glow = (x, y, r, rgb, a) => { if (a <= 0.003 || r <= 0) return;
+  const ga = ctx.globalAlpha; ctx.globalAlpha = ga * Math.min(1, a); ctx.drawImage(sprite(rgb), x - r, y - r, 2 * r, 2 * r); ctx.globalAlpha = ga; };
 
 function quad(S, T) {                           // leave the planet near the limb, then head out
   const a1 = Math.atan2(S[1] - cy, S[0] - cx), a2 = Math.atan2(T[1] - cy, T[0] - cx);
@@ -495,8 +546,74 @@ function drawDish(x, y, rot, on, sec) {
     glow(3.6, -1.5, 5, '255,170,90', 0.5 * b); dot(3.6, -1.5, 0.9, `rgba(255,200,130,${0.5 + 0.5 * b})`); ctx.restore(); }
 }
 
+// ======================= cached globe =======================
+// the globe turns 0.25°/min, so it is repainted every few seconds into its own canvas; frames just copy it
+const GLOBE = { c: document.createElement('canvas'), at: -1e9, key: '' };
+function paintGlobe(p, path, s, sunAng, sec) {
+  const half = Math.ceil(R * 1.2), key = `${W}x${H}@${DPR}`;
+  if (GLOBE.key !== key) { GLOBE.c.width = GLOBE.c.height = 2 * half * DPR; GLOBE.key = key; }
+  GLOBE.ox = cx - half; GLOBE.oy = cy - half; GLOBE.at = sec;
+  ctx = GLOBE.c.getContext('2d');
+  ctx.setTransform(1, 0, 0, 1, 0, 0); ctx.clearRect(0, 0, GLOBE.c.width, GLOBE.c.height);
+  ctx.setTransform(DPR, 0, 0, DPR, -GLOBE.ox * DPR, -GLOBE.oy * DPR);
+  path = d3.geoPath(p, ctx);
+  let g = ctx.createRadialGradient(cx, cy, R * 0.96, cx, cy, R * 1.17);
+  g.addColorStop(0, 'rgba(120,170,255,0.38)'); g.addColorStop(1, 'rgba(120,170,255,0)');
+  ctx.fillStyle = g; ctx.beginPath(); ctx.arc(cx, cy, R * 1.17, 0, 6.283); ctx.fill();
+  ctx.save(); ctx.beginPath(); path({ type: 'Sphere' }); ctx.clip();
+  ctx.fillStyle = '#2b5c8c'; ctx.fillRect(cx - R, cy - R, 2 * R, 2 * R);
+  // sea ice (November: Arctic growing, Antarctic still wide)
+  ctx.beginPath(); path(d3.geoCircle().center([0, 90]).radius(17)()); ctx.fillStyle = 'rgba(225,238,248,0.55)'; ctx.fill();
+  ctx.beginPath(); path(d3.geoCircle().center([0, -90]).radius(28)()); ctx.fillStyle = 'rgba(225,238,248,0.4)'; ctx.fill();
+  if (LAND) {
+    ctx.beginPath(); path(LAND); ctx.lineWidth = 3.5; ctx.strokeStyle = 'rgba(110,175,210,0.45)'; ctx.stroke();   // shallows
+    ctx.fillStyle = '#86bf9c'; ctx.fill();
+    ctx.save(); ctx.beginPath(); path(LAND); ctx.clip();
+    // boreal forest and tundra bands
+    for (const [rad, rgb, a] of [[40, '80,140,105', .12], [37, '80,140,105', .14], [34, '80,140,105', .16], [31, '80,140,105', .14],
+                                 [27, '175,190,170', .2], [24, '175,190,170', .25], [21, '190,200,185', .3]]) {
+      ctx.beginPath(); path(d3.geoCircle().center([0, 90]).radius(rad)()); ctx.fillStyle = `rgba(${rgb},${a})`; ctx.fill();
+    }
+    for (const [lon, lat, rad, rgb, a] of BIOME_BLOBS) {
+      ctx.beginPath(); path(d3.geoCircle().center([lon, lat]).radius(rad)()); ctx.fillStyle = `rgba(${rgb},${a})`; ctx.fill();
+    }
+    // ice sheets
+    ctx.beginPath(); path(d3.geoCircle().center([0, -90]).radius(27)()); ctx.fillStyle = '#eef3f6'; ctx.fill();
+    ctx.beginPath(); path(d3.geoCircle().center([-41, 72.5]).radius(10.5)()); ctx.fillStyle = 'rgba(238,243,246,0.95)'; ctx.fill();
+    ctx.restore();
+  }
+  // clouds drifting with the weather
+  for (const c of CLOUDS) {
+    ctx.beginPath(); path(d3.geoCircle().center([c.lon + sec * c.speed, c.lat]).radius(c.rad)());
+    ctx.fillStyle = `rgba(255,255,255,${c.a})`; ctx.fill();
+  }
+  const sa = sunAng * RAD;
+  if (d3.geoDistance(p.center_, [s.lon, s.lat]) < Math.PI / 2) {                 // sun glint on the ocean
+    const gp = p([s.lon, s.lat]); glow(gp[0], gp[1], R * 0.16, '255,250,235', 0.22);
+  }
+  glow(cx + 0.5 * R * Math.cos(sa), cy - 0.5 * R * Math.sin(sa), R * 1.1, '255,238,210', 0.16);
+  const anti = [s.lon + 180, -s.lat];
+  for (const [rad, a] of [[96, .12], [93, .18], [90, .25], [86, .25], [80, .25], [70, .2]]) {
+    ctx.beginPath(); path(d3.geoCircle().center(anti).radius(rad)()); ctx.fillStyle = `rgba(9,12,40,${a})`; ctx.fill();
+  }
+  // city lights on the night side, fading in through twilight
+  for (const [i, [lon, lat, pop]] of LIGHTS.entries()) {
+    if (d3.geoDistance(p.center_, [lon, lat]) > Math.PI / 2 - 0.02) continue;
+    const night = Math.max(0, Math.min(1, (d3.geoDistance([s.lon, s.lat], [lon, lat]) / RAD - 92) / 10));
+    if (!night) continue;
+    const [x, y] = p([lon, lat]), tw = 0.85 + 0.15 * Math.sin(i * 2.1);
+    const big = Math.sqrt(pop);
+    if (pop > 1) glow(x, y, 2 + big * 1.6, '255,190,110', 0.28 * night);
+    dot(x, y, 0.35 + big * 0.28, `rgba(255,${215 + Math.min(30, pop * 3)},${150 + Math.min(60, pop * 5)},${(0.45 + 0.5 * Math.min(1, pop / 6)) * night * tw})`);
+  }
+
+  ctx.restore();
+  ctx = MAIN;
+}
+
 // ======================= frame =======================
 function frame() {
+  if (document.hidden) { setTimeout(frame, 1000); return; }      // asleep while nobody can see it
   const t = now(), s = sun(t), sec = (Date.now() - T0) / 1000;
   const dt = Math.min(0.5, sec - (frame.last ?? sec)); frame.last = sec;
   for (const [key, L] of LINKS) {                 // links fade in and out over a few seconds
@@ -547,39 +664,6 @@ function frame() {
   }
   ctx.globalAlpha = 1;
 
-  // ---- distance as dust: slow drifting motes at 1 light-second / minute / hour / day
-  for (const [ri, ring] of RINGS.entries()) {
-    // full circle (so no sector edges), patchy like drifting clouds, wider spread farther out
-    const rr = rOf(ring.d), n = Math.round(rr * 6.283 * 0.22), drift = sec * 0.006 * (1.2 - logFrac(ring.d));
-    const spread = 3 + rr * 0.03;
-    for (let k = 0; k < n; k++) {
-      const a0 = 6.283 * (k + 0.5 * Math.sin(k * 12.9898)) / n;
-      const patch = 0.5 + 0.5 * Math.sin(3 * a0 + ri * 1.9) * Math.sin(5 * a0 - ri + 0.05 * sec);
-      if (mod(Math.sin(k * 78.233) * 43758.5453, 1) > 0.15 + 0.85 * patch) continue;
-      const a = a0 + drift * (k % 2 ? 1 : -0.6);
-      const jr = rr + spread * (Math.sin(k * 7.13 + sec * 0.15) * 0.7 + Math.sin(k * 3.7) * 0.5);
-      const x = cx + jr * Math.cos(a), y = cy - jr * Math.sin(a);
-      if (x < 0 || x > W || y < 0 || y > H || (x < 400 && y < 100)) continue;   // keep the header clear
-      ctx.fillStyle = `rgba(${ring.rgb},${0.22 + 0.3 * Math.sin(sec * 0.8 + k * 1.7) ** 2})`;
-      ctx.beginPath(); ctx.arc(x, y, 0.7 + (k % 3) * 0.4, 0, 6.283); ctx.fill();
-    }
-  }
-
-  // ---- heliopause: a wavering violet veil
-  {
-    const rH = EXOTIC.rHP, n = Math.round(rH * 0.5);
-    ctx.lineWidth = 26; ctx.strokeStyle = 'rgba(160,110,255,0.035)';
-    ctx.beginPath(); ctx.arc(cx, cy, rH, 0, 6.283); ctx.stroke();
-    for (let k = 0; k < n * 3.4; k++) {
-      const a = 6.283 * k / (n * 3.4);
-      const jr = rH + 7 * Math.sin(3 * a + 0.2 * sec) + 4 * Math.sin(13 * a - 0.37 * sec) + 9 * Math.sin(k * 91.7);
-      const x = cx + jr * Math.cos(a), y = cy - jr * Math.sin(a);
-      if (x < 0 || x > W || y < 0 || y > H) continue;
-      ctx.fillStyle = `rgba(${k % 3 ? '175,120,255' : '255,130,210'},${0.1 + 0.18 * Math.sin(5 * a + 0.5 * sec + k) ** 2})`;
-      ctx.beginPath(); ctx.arc(x, y, 0.7, 0, 6.283); ctx.fill();
-    }
-  }
-
   // ---- the exotic: a pulsar ticking, and now and then a supernova somewhere in the galaxy
   if (EXOTIC.pulsar) {
     const [x, y] = EXOTIC.pulsar, P = 0.089 * 12, fl = Math.exp(-mod(sec, P) / 0.07), ba = sec * 0.35;
@@ -603,76 +687,29 @@ function frame() {
     }
   }
 
-  // ---- earth
-  glow(cx, cy, R * 1.18, '120,170,255', 0.0);
-  g = ctx.createRadialGradient(cx, cy, R * 0.96, cx, cy, R * 1.17);
-  g.addColorStop(0, 'rgba(120,170,255,0.38)'); g.addColorStop(1, 'rgba(120,170,255,0)');
-  ctx.fillStyle = g; ctx.beginPath(); ctx.arc(cx, cy, R * 1.17, 0, 6.283); ctx.fill();
-  ctx.save(); ctx.beginPath(); path({ type: 'Sphere' }); ctx.clip();
-  ctx.fillStyle = '#2b5c8c'; ctx.fillRect(cx - R, cy - R, 2 * R, 2 * R);
-  // sea ice (November: Arctic growing, Antarctic still wide)
-  ctx.beginPath(); path(d3.geoCircle().center([0, 90]).radius(17)()); ctx.fillStyle = 'rgba(225,238,248,0.55)'; ctx.fill();
-  ctx.beginPath(); path(d3.geoCircle().center([0, -90]).radius(28)()); ctx.fillStyle = 'rgba(225,238,248,0.4)'; ctx.fill();
-  if (LAND) {
-    ctx.beginPath(); path(LAND); ctx.lineWidth = 3.5; ctx.strokeStyle = 'rgba(110,175,210,0.45)'; ctx.stroke();   // shallows
-    ctx.fillStyle = '#86bf9c'; ctx.fill();
-    ctx.save(); ctx.beginPath(); path(LAND); ctx.clip();
-    // boreal forest and tundra bands
-    for (const [rad, rgb, a] of [[40, '80,140,105', .12], [37, '80,140,105', .14], [34, '80,140,105', .16], [31, '80,140,105', .14],
-                                 [27, '175,190,170', .2], [24, '175,190,170', .25], [21, '190,200,185', .3]]) {
-      ctx.beginPath(); path(d3.geoCircle().center([0, 90]).radius(rad)()); ctx.fillStyle = `rgba(${rgb},${a})`; ctx.fill();
-    }
-    for (const [lon, lat, rad, rgb, a] of BIOME_BLOBS) {
-      ctx.beginPath(); path(d3.geoCircle().center([lon, lat]).radius(rad)()); ctx.fillStyle = `rgba(${rgb},${a})`; ctx.fill();
-    }
-    // ice sheets
-    ctx.beginPath(); path(d3.geoCircle().center([0, -90]).radius(27)()); ctx.fillStyle = '#eef3f6'; ctx.fill();
-    ctx.beginPath(); path(d3.geoCircle().center([-41, 72.5]).radius(10.5)()); ctx.fillStyle = 'rgba(238,243,246,0.95)'; ctx.fill();
-    ctx.restore();
-  }
-  // clouds drifting with the weather
-  for (const c of CLOUDS) {
-    ctx.beginPath(); path(d3.geoCircle().center([c.lon + sec * c.speed, c.lat]).radius(c.rad)());
-    ctx.fillStyle = `rgba(255,255,255,${c.a})`; ctx.fill();
-  }
-  const sa = sunAng * RAD;
-  if (d3.geoDistance(p.center_, [s.lon, s.lat]) < Math.PI / 2) {                 // sun glint on the ocean
-    const gp = p([s.lon, s.lat]); glow(gp[0], gp[1], R * 0.16, '255,250,235', 0.22);
-  }
-  glow(cx + 0.5 * R * Math.cos(sa), cy - 0.5 * R * Math.sin(sa), R * 1.1, '255,238,210', 0.16);
-  const anti = [s.lon + 180, -s.lat];
-  for (const [rad, a] of [[96, .12], [93, .18], [90, .25], [86, .25], [80, .25], [70, .2]]) {
-    ctx.beginPath(); path(d3.geoCircle().center(anti).radius(rad)()); ctx.fillStyle = `rgba(9,12,40,${a})`; ctx.fill();
-  }
-  // city lights on the night side, fading in through twilight
-  for (const [i, [lon, lat, pop]] of LIGHTS.entries()) {
-    if (d3.geoDistance(p.center_, [lon, lat]) > Math.PI / 2 - 0.02) continue;
-    const night = Math.max(0, Math.min(1, (d3.geoDistance([s.lon, s.lat], [lon, lat]) / RAD - 92) / 10));
-    if (!night) continue;
-    const [x, y] = p([lon, lat]), tw = 0.85 + 0.15 * Math.sin(sec * 1.3 + i * 2.1);
-    const big = Math.sqrt(pop);
-    if (pop > 1) glow(x, y, 2 + big * 1.6, '255,190,110', 0.28 * night);
-    dot(x, y, 0.35 + big * 0.28, `rgba(255,${215 + Math.min(30, pop * 3)},${150 + Math.min(60, pop * 5)},${(0.45 + 0.5 * Math.min(1, pop / 6)) * night * tw})`);
-  }
-
   // aurora: NOAA's live oval when we have it (model otherwise), wobbling, with brightness waves running along it
+  // ---- earth (cached), then the live aurora on top
+  if (sec - GLOBE.at > 4 || GLOBE.key !== `${W}x${H}@${DPR}`) paintGlobe(p, path, s, sunAng, sec);
+  ctx.setTransform(1, 0, 0, 1, 0, 0); ctx.drawImage(GLOBE.c, GLOBE.ox * DPR, GLOBE.oy * DPR); ctx.setTransform(DPR, 0, 0, DPR, 0, 0);
+  const anti = [s.lon + 180, -s.lat];
+  ctx.save(); ctx.beginPath(); path({ type: 'Sphere' }); ctx.clip();
   ctx.save(); ctx.beginPath(); path(d3.geoCircle().center(anti).radius(99)()); ctx.clip();
   ctx.lineCap = 'round';
   for (const [pi, pole] of [GEOMAG_N, GEOMAG_S].entries()) {
-    const N = 120, pts = [];
+    const N = 120, pts = [], STEP = 3;
     for (let i = 0; i <= N; i++) {
       const b = i / N * 360, br = b * RAD;
       const live = AURORA && AURORA[pi ? 'S' : 'N'], base = live && live.r[i % N] != null ? live.r[i % N] : 20.5;
       const rr = base + (live ? 0.6 : 1.1) * Math.sin(3 * br + 0.13 * sec + pi) + 0.5 * Math.sin(7 * br - 0.31 * sec);
       pts.push({ ll: dest(pole, b, rr), hi: dest(pole, b, rr - 2.2 - 0.8 * Math.sin(5 * br + 0.4 * sec)), b: br });
     }
-    for (let i = 0; i < N; i += 2) {
+    for (let i = 0; i < N; i += STEP) {
       const br = pts[i].b;
       const live = AURORA && AURORA[pi ? 'S' : 'N'], strength = live ? 0.15 + live.v[i] : 1;
       const wave = strength * (0.25 + 0.75 * Math.max(0, Math.sin(4 * br - 0.45 * sec + pi)) ** 2 * (0.7 + 0.3 * Math.sin(11 * br + 1.3 * sec)));
-      const seg = { type: 'LineString', coordinates: [pts[i].ll, pts[i + 1].ll, pts[i + 2].ll] };
-      const top = { type: 'LineString', coordinates: [pts[i].hi, pts[i + 1].hi, pts[i + 2].hi] };
-      for (const [w, a] of [[R * .09, .06], [R * .04, .16], [R * .014, .38]]) {
+      const seg = { type: 'LineString', coordinates: pts.slice(i, Math.min(N, i + STEP) + 1).map(q => q.ll) };
+      const top = { type: 'LineString', coordinates: pts.slice(i, Math.min(N, i + STEP) + 1).map(q => q.hi) };
+      for (const [w, a] of [[R * .07, .09], [R * .016, .4]]) {
         ctx.beginPath(); path(seg); ctx.lineWidth = w; ctx.strokeStyle = `rgba(120,255,180,${a * wave})`; ctx.stroke();
       }
       ctx.beginPath(); path(top); ctx.lineWidth = R * .05; ctx.strokeStyle = `rgba(175,125,255,${.12 * wave})`; ctx.stroke();
@@ -830,7 +867,7 @@ function frame() {
     }
   }
 
-  setTimeout(() => requestAnimationFrame(frame), 1000 / 30);
+  setTimeout(() => requestAnimationFrame(frame), 1000 / FPS);
 }
 const MOUSE = { x: 0, y: 0, on: false };
 addEventListener('mousemove', e => { MOUSE.x = e.clientX; MOUSE.y = e.clientY; MOUSE.on = true; });
