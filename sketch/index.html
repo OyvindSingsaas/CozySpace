@@ -1023,20 +1023,20 @@ function drawArecibo(sec) {
   const stopped = ARECIBO.stopAt != null ? Math.max(0, 1 - (sec - ARECIBO.stopAt) / 0.6) : 1;   // closed early: fade quickly
   const fadeOut = Math.max(0, Math.min(1, (ARECIBO_BITS.length / 10 + 12 - el) / 4)) * stopped, fadeIn = Math.min(1, el / 0.8), A = fadeIn * fadeOut;
   if (fadeOut <= 0) { ARECIBO.start = null; ARECIBO.stopAt = null; ARECIBO.box = null; if (AUDIO.playing?.key === 'ARECIBO') AUDIO.playing = null; return; }   // finished (not merely fading in)
-  const cs = Math.max(2.4, Math.min(3.4, (H - 140) / 73)), pw = 23 * cs, ph = 73 * cs;
+  const cs = Math.max(1.7, Math.min(2.3, (H - 140) / 73 * 0.62)), pw = 23 * cs, ph = 73 * cs;   // small: it forms right there in space
   const [ax, ay] = EXOTIC.arecibo;
-  let px = ax + 26, py = ay - ph / 2;                                  // beside the arc, kept on screen
-  if (px + pw > W - 20) px = ax - 26 - pw;
+  let px = ax + 80, py = ay - ph / 2;                                  // beside the arc (clear of its label), kept on screen
+  if (px + pw > W - 20) px = ax - 40 - pw;
   py = Math.max(60, Math.min(H - ph - 40, py));
   ARECIBO.box = { x: px - 10, y: py - 26, w: pw + 20, h: ph + 56 };      // the panel counts as 'near' the arc
   ctx.save(); ctx.globalAlpha = A;
-  ctx.fillStyle = 'rgba(8,10,28,0.72)'; roundedRect(px - 10, py - 26, pw + 20, ph + 56, 10); ctx.fill();
-  ctx.font = FONT(9); ctx.fillStyle = 'rgba(255,215,160,0.75)'; ctx.textAlign = 'center';
+  ctx.font = FONT(9); ctx.fillStyle = 'rgba(255,215,160,0.6)'; ctx.textAlign = 'center';
   ctx.fillText(`arecibo · 16 nov 1974 · ${n} / 1679 bits`, px + pw / 2, py - 10);
   for (let i = 0; i < n; i++) {
     const x = px + (i % 23) * cs, y = py + Math.floor(i / 23) * cs, fresh = i > n - 12;
-    if (ARECIBO_BITS[i] === '1') { ctx.fillStyle = fresh ? 'rgba(255,245,220,1)' : 'rgba(255,205,140,0.9)'; ctx.fillRect(x, y, cs - 0.6, cs - 0.6); }
-    else { ctx.fillStyle = 'rgba(255,205,140,0.07)'; ctx.fillRect(x, y, cs - 0.6, cs - 0.6); }
+    if (ARECIBO_BITS[i] !== '1') continue;                              // only the lit bits: no frame, no grid
+    if (fresh) glow(x + cs / 2, y + cs / 2, cs * 2.2, '255,225,170', 0.35);
+    ctx.fillStyle = fresh ? 'rgba(255,245,220,1)' : 'rgba(255,205,140,0.85)'; ctx.fillRect(x, y, cs - 0.4, cs - 0.4);
   }
   ctx.font = FONT(8); ctx.fillStyle = 'rgba(200,190,170,0.5)';
   ctx.fillText('the real bits · tones generated, one pitch per value', px + pw / 2, py + ph + 18);
