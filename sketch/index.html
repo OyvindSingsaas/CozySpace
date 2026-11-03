@@ -995,10 +995,11 @@ const SMOOTH = {}, SEEN = {}, FIRST = {};
 // panned to where the object is and set in a soft reverb. off until the speaker button is pressed
 // (browsers only allow sound after a click); the choice is remembered.
 const AUDIO = { ctx: null, on: false, buffers: {}, last: {}, turn: {}, playing: null };
-const OBJECT_SOUNDS = { VGR1: ['motherChild', 'whale'], VGR2: ['whale', 'motherChild'], SGRA: ['perseus'] };   // alternate between these
-const CLIP_GAIN = { perseus: 0.4 };                   // level-match the clips
+const OBJECT_SOUNDS = { VGR1: ['motherChild', 'whale'], VGR2: ['whale', 'motherChild'], SGRA: ['perseus'], MOON: ['moonStep'], MARS: ['mars'] };   // alternate between these
+const CLIP_GAIN = { perseus: 0.6, mars: 0.85 };                   // level-match the clips
 const CLIP_TITLES = { motherChild: 'golden record · kiss, mother and child', whale: 'golden record · humpback whales',
-  perseus: 'the black hole in the perseus cluster, as sound · NASA/CXC/SAO' };
+  perseus: 'the black hole in the perseus cluster, as sound · NASA/CXC/SAO',
+  mars: 'sound on mars · perseverance\'s microphone', moonStep: 'apollo 11 · one small step, 20 july 1969' };
 const pref = (() => { try { return localStorage.getItem('cozyspace.sound') === 'on'; } catch (e) { return false; } })();
 function savePref(v) { try { localStorage.setItem('cozyspace.sound', v ? 'on' : 'off'); } catch (e) {} }
 function impulse(C, secs, decay) {
@@ -1523,7 +1524,7 @@ function frame() {
     if (pl && sec < pl.until && spot(pl.key)) {                      // a quiet caption above the object while its clip plays
       const P = spot(pl.key), f = Math.min(1, (pl.until - sec) / 2, (sec - (pl.until - (AUDIO.buffers[pl.clip]?.duration || 1))) / 1);
       ctx.font = FONT(10); ctx.fillStyle = `rgba(255,215,170,${0.6 * Math.max(0, f)})`; ctx.textAlign = 'center';
-      ctx.fillText('♪ ' + (CLIP_TITLES[pl.clip] || pl.clip), P[0], P[1] + (pl.key === 'SGRA' ? 34 : -14)); ctx.textAlign = 'left';
+      ctx.fillText('♪ ' + (CLIP_TITLES[pl.clip] || pl.clip), P[0], P[1] + 32); ctx.textAlign = 'left';
     }
   }
 
