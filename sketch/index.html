@@ -166,7 +166,7 @@ const GEOMAG_N = [-72.6, 80.8], GEOMAG_S = [107.4, -80.8];
 const params = new URLSearchParams(location.search);
 const SPEED = +params.get('speed') || 1;
 const T0 = Date.now();
-const FPS = +params.get('fps') || 15;
+const FPS = +params.get('fps') || 24;
 const OFFSET = (+params.get('offset') || 0) * 60000;     // ?offset=25 : look 25 minutes ahead
 const now = () => T0 + OFFSET + (Date.now() - T0) * SPEED;
 const J2000 = 946728000000, RAD = Math.PI / 180, C_KMS = 299792.458, AU = 1.495978707e8;
@@ -518,7 +518,7 @@ const BIOMES = [
 const BIOME_BLOBS = BLOBS(BIOMES, 31);
 let LAND = null;
 fetch('https://cdn.jsdelivr.net/npm/world-atlas@2.0.2/land-110m.json').then(r => r.json())
-  .then(topo => { LAND = topojson.feature(topo, topo.objects.land); GLOBE.at = -1e9; });   // repaint the globe once coastlines arrive
+  .then(topo => { LAND = topojson.feature(topo, topo.objects.land); GLOBE.at = -1e9; GLOBE.ready = false; });   // repaint the globe once coastlines arrive
 
 const FONT = (px, w = 400) => `${w} ${px}px 'Space Grotesk',system-ui,sans-serif`;
 const lightTime = d => { const s = d / C_KMS;
@@ -558,9 +558,10 @@ function dest([lon, lat], brg, dist) {
 // real light-time, or the time needed at the screen speed limit, whichever is longer
 const VPX = +params.get('vmax') || 120, TABLES = new Map();
 const BITS_PER_PACKET = 8e6 * (+params.get('mb') || 1), MIN_GAP = 2, UPLINK_EVERY = 300;   // 1 packet = 1 MB
-function travelTable(dT, Lp) {
-  const key = Math.round(Math.log10(dT) * 300) + '|' + Math.round(Lp / 4);
+function travelBin(bin) {
+  const key = bin + '|' + W + 'x' + H;
   if (TABLES.has(key)) return TABLES.get(key);
+  const dT = 10 ** (bin / 300), Lp = Math.max(40, rOf(dT) - R);            // nominal on-screen length: the target's radius
   const FT = logFrac(dT) || 1e-6, span = Math.log10(LIGHT_DAY) - LOG_D0, N = 400;
   const dAt = s => s <= 0 ? 0 : 10 ** (LOG_D0 + span * (s * FT) ** (1 / GAMMA));
   const ts = [0], ss = [1];
@@ -575,7 +576,13 @@ function travelTable(dT, Lp) {
   TABLES.set(key, tab);
   return tab;
 }
+// a profile for any distance, blended between the two neighbouring bins so nothing steps as distances drift
+function travelTable(dT) {
+  const b = Math.log10(dT) * 300, b0 = Math.floor(b), u = b - b0, A = travelBin(b0), B = travelBin(b0 + 1);
+  return { A, B, u, T: A.T + (B.T - A.T) * u };
+}
 function sAt(tab, tl) {
+  if (tab.A) return sAt(tab.A, tl / tab.T * tab.A.T) * (1 - tab.u) + sAt(tab.B, tl / tab.T * tab.B.T) * tab.u;
   let lo = 0, hi = tab.ts.length - 1;
   while (hi - lo > 1) { const m = (lo + hi) >> 1; if (tab.ts[m] <= tl) lo = m; else hi = m; }
   const f = (tl - tab.ts[lo]) / ((tab.ts[hi] - tab.ts[lo]) || 1);
@@ -662,14 +669,16 @@ function drawDish(x, y, rot, on, sec) {
 
 // ======================= cached globe =======================
 // the globe turns 0.25°/min, so it is repainted every few seconds into its own canvas; frames just copy it
-const GLOBE = { c: document.createElement('canvas'), at: -1e9, key: '' };
-function paintGlobe(p, path, s, sunAng, sec) {
+const GLOBE = { front: document.createElement('canvas'), back: document.createElement('canvas'), at: -1e9, key: '', job: null, ready: false };
+function* paintGlobeJob(p, s, sunAng, sec) {
+  let path;
   const half = Math.ceil(R * 1.2), key = `${W}x${H}@${DPR}`;
-  if (GLOBE.key !== key) { GLOBE.c.width = GLOBE.c.height = 2 * half * DPR; GLOBE.key = key; }
-  GLOBE.ox = cx - half; GLOBE.oy = cy - half; GLOBE.at = sec;
-  ctx = GLOBE.c.getContext('2d');
-  ctx.setTransform(1, 0, 0, 1, 0, 0); ctx.clearRect(0, 0, GLOBE.c.width, GLOBE.c.height);
-  ctx.setTransform(DPR, 0, 0, DPR, -GLOBE.ox * DPR, -GLOBE.oy * DPR);
+  for (const c of [GLOBE.back, GLOBE.front]) if (c.width !== 2 * half * DPR) c.width = c.height = 2 * half * DPR;
+  GLOBE.key = key; GLOBE.box = cx - half; GLOBE.boy = cy - half; GLOBE.at = sec;
+  const G = GLOBE.back.getContext('2d');
+  ctx = G;
+  ctx.setTransform(1, 0, 0, 1, 0, 0); ctx.clearRect(0, 0, GLOBE.back.width, GLOBE.back.height);
+  ctx.setTransform(DPR, 0, 0, DPR, -GLOBE.box * DPR, -GLOBE.boy * DPR);
   path = d3.geoPath(p, ctx);
   let g = ctx.createRadialGradient(cx, cy, R * 0.96, cx, cy, R * 1.17);
   g.addColorStop(0, 'rgba(120,170,255,0.38)'); g.addColorStop(1, 'rgba(120,170,255,0)');
@@ -682,13 +691,15 @@ function paintGlobe(p, path, s, sunAng, sec) {
   if (LAND) {
     ctx.beginPath(); path(LAND); ctx.lineWidth = 3.5; ctx.strokeStyle = 'rgba(110,175,210,0.45)'; ctx.stroke();   // shallows
     ctx.fillStyle = '#86bf9c'; ctx.fill();
+    ctx = MAIN; yield; ctx = G;
     ctx.save(); ctx.beginPath(); path(LAND); ctx.clip();
     // boreal forest and tundra bands
     for (const [rad, rgb, a] of [[40, '80,140,105', .12], [37, '80,140,105', .14], [34, '80,140,105', .16], [31, '80,140,105', .14],
                                  [27, '175,190,170', .2], [24, '175,190,170', .25], [21, '190,200,185', .3]]) {
       ctx.beginPath(); path(d3.geoCircle().center([0, 90]).radius(rad)()); ctx.fillStyle = `rgba(${rgb},${a})`; ctx.fill();
     }
-    for (const [lon, lat, rad, rgb, a] of BIOME_BLOBS) {
+    for (const [bi, [lon, lat, rad, rgb, a]] of BIOME_BLOBS.entries()) {
+      if (bi % 40 === 39) { ctx = MAIN; yield; ctx = G; }
       ctx.beginPath(); path(d3.geoCircle().center([lon, lat]).radius(rad)()); ctx.fillStyle = `rgba(${rgb},${a})`; ctx.fill();
     }
     // ice sheets
@@ -697,7 +708,9 @@ function paintGlobe(p, path, s, sunAng, sec) {
     ctx.restore();
   }
   // clouds drifting with the weather
-  for (const c of CLOUDS) {
+  ctx = MAIN; yield; ctx = G;
+  for (const [ci, c] of CLOUDS.entries()) {
+    if (ci % 90 === 89) { ctx = MAIN; yield; ctx = G; }
     ctx.beginPath(); path(d3.geoCircle().center([c.lon + sec * c.speed, c.lat]).radius(c.rad)());
     ctx.fillStyle = `rgba(255,255,255,${c.a})`; ctx.fill();
   }
@@ -711,7 +724,9 @@ function paintGlobe(p, path, s, sunAng, sec) {
     ctx.beginPath(); path(d3.geoCircle().center(anti).radius(rad)()); ctx.fillStyle = `rgba(9,12,40,${a})`; ctx.fill();
   }
   // city lights on the night side, fading in through twilight
+  ctx = MAIN; yield; ctx = G;
   for (const [i, [lon, lat, pop]] of LIGHTS.entries()) {
+    if (i % 250 === 249) { ctx = MAIN; yield; ctx = G; }
     if (d3.geoDistance(p.center_, [lon, lat]) > Math.PI / 2 - 0.02) continue;
     const night = Math.max(0, Math.min(1, (d3.geoDistance([s.lon, s.lat], [lon, lat]) / RAD - 92) / 10));
     if (!night) continue;
@@ -934,6 +949,8 @@ function drawISS(x, y, ang, lit) {
   ctx.restore();
 }
 
+const SMOOTH = {};
+
 // ======================= frame =======================
 function frame() {
   if (document.hidden) { setTimeout(frame, 1000); return; }      // asleep while nobody can see it
@@ -962,7 +979,11 @@ function frame() {
   const free = Object.fromEntries(Object.entries(S));
   const TH = spreadAngles(free, s.lam);
   const pos = {};
-  for (const [k, v] of Object.entries(S)) pos[k] = skyPos(TH[k], v.d);
+  for (const [k, v] of Object.entries(S)) {
+    const P = skyPos(TH[k], v.d), Q = SMOOTH[k];                 // glide to new positions (e.g. when a new craft joins the layout)
+    pos[k] = Q && Math.hypot(P[0] - Q[0], P[1] - Q[1]) < 300 ? [Q[0] + (P[0] - Q[0]) * Math.min(1, dt * 2), Q[1] + (P[1] - Q[1]) * Math.min(1, dt * 2)] : P;
+    SMOOTH[k] = pos[k];
+  }
   // craft that live at a body circle it
   const kids = {};
   for (const [k, par] of Object.entries(PARENT)) {
@@ -1017,8 +1038,18 @@ function frame() {
     frame.flareLvl = lvl; }
 
   // ---- earth (cached), then the live aurora on top
-  if (sec - GLOBE.at > 4 || GLOBE.key !== `${W}x${H}@${DPR}`) paintGlobe(p, path, s, sunAng, sec);
-  ctx.setTransform(1, 0, 0, 1, 0, 0); ctx.drawImage(GLOBE.c, GLOBE.ox * DPR, GLOBE.oy * DPR); ctx.setTransform(DPR, 0, 0, DPR, 0, 0);
+  {                                             // repaint in ~5 ms slices across frames, then swap: no stall
+    const resized = GLOBE.key !== `${W}x${H}@${DPR}`;
+    if (resized) GLOBE.job = null;
+    if (!GLOBE.job && (resized || sec - GLOBE.at > 4)) GLOBE.job = paintGlobeJob(p, s, sunAng, sec);
+    if (GLOBE.job) {
+      const t0 = performance.now(), sync = resized || !GLOBE.ready;
+      let r; do { r = GLOBE.job.next(); } while (!r.done && (sync || performance.now() - t0 < 5));
+      ctx = MAIN;
+      if (r.done) { GLOBE.job = null; [GLOBE.front, GLOBE.back] = [GLOBE.back, GLOBE.front]; GLOBE.fox = GLOBE.box; GLOBE.foy = GLOBE.boy; GLOBE.ready = true; }
+    }
+  }
+  ctx.setTransform(1, 0, 0, 1, 0, 0); ctx.drawImage(GLOBE.front, GLOBE.fox * DPR, GLOBE.foy * DPR); ctx.setTransform(DPR, 0, 0, DPR, 0, 0);
   const anti = [s.lon + 180, -s.lat];
   ctx.save(); ctx.beginPath(); path({ type: 'Sphere' }); ctx.clip();
   ctx.save(); ctx.beginPath(); path(d3.geoCircle().center(anti).radius(99)()); ctx.clip();
@@ -1143,7 +1174,7 @@ function frame() {
       ctx.beginPath(); ctx.moveTo(...q[0]); ctx.quadraticCurveTo(...q[1], ...q[2]); ctx.stroke();
       // real light speed, with a speed limit on screen: a packet moves at c (on the log scale) until that would
       // exceed VPX px/s, then glides at VPX. far out: true speed; near Earth: a few seconds' grace.
-      const dT = S[d.target].d, Lp = qLen(q), Tl = dT / C_KMS, tab = travelTable(dT, Lp);
+      const dT = S[d.target].d, Lp = qLen(q), tab = travelTable(dT);
       // one packet = one megabyte. downlink: the real data rate sets how often one leaves the spacecraft.
       // uplinks report no rate in the feed, so a command packet goes up every UPLINK_EVERY seconds.
       const rate = downs.reduce((a, x) => a + x.rate, 0);                  // bit/s, summed over the dish's downlink channels
@@ -1151,18 +1182,26 @@ function frame() {
       const tnow = t / 1000;
       for (const [on, dir, rgb, a0, g] of [[downs.length && gapDown, -1, '255,190,120', strength, gapDown], [ups.length, 1, '130,225,255', 0.7, UPLINK_EVERY]]) {
         if (!on) continue;
-        const phase = hash(d.dish + d.target + dir) * g, k0 = Math.floor((tnow - phase) / g);
-        let last = -1;
-        for (let k = Math.ceil(tab.T / g); k >= 0; k--) {
-          const age = tnow - (phase + (k0 - k) * g);
-          if (age < 0 || age > tab.T) continue;
-          const tl = dir < 0 ? age : tab.T - age;                     // table runs spacecraft -> Earth
+        // each packet keeps the time it left; a change in data rate only affects packets not yet sent
+        const E = d['emit' + dir] || (d['emit' + dir] = { times: [], next: null });
+        if (E.next === null || tnow - E.next > tab.T || tnow < (E.times[0] ?? tnow) - 1) {   // first sight, or a jump in time: fill the path
+          E.times = []; for (let tt = tnow - hash(d.dish + d.target + dir) * g; tt > tnow - tab.T; tt -= g) E.times.unshift(tt);
+          E.next = (E.times.length ? E.times[E.times.length - 1] : tnow - g) + g;
+        }
+        E.next = Math.min(E.next, (E.times.length ? E.times[E.times.length - 1] : tnow) + g);   // a higher rate kicks in at once
+        while (E.next <= tnow) { E.times.push(E.next); E.next += g; }
+        while (E.times.length && tnow - E.times[0] > tab.T) E.times.shift();
+        let prevU = null;
+        for (let k = 0; k < E.times.length; k++) {                    // oldest first
+          const age = tnow - E.times[k], tl = dir < 0 ? age : tab.T - age;   // table runs spacecraft -> Earth
           const u = sAt(tab, tl);
-          if (last >= 0 && Math.abs(u - last) * Lp < 28) continue;     // don't stack packets on top of each other
-          last = u;
+          const gapPx = prevU === null ? 1e9 : Math.abs(u - prevU) * Lp;
+          prevU = u;
+          const crowd = Math.max(0, Math.min(1, (gapPx - 10) / 18));   // a packet crowding the one ahead fades out smoothly
+          if (crowd <= 0) continue;
           const v = Math.abs(u - sAt(tab, Math.min(tab.T, tl + 0.1))) / 0.1 * Lp;   // screen speed, px/s
-          const fl = d.target === 'VGR1' ? 0.4 + 0.6 * Math.abs(Math.sin(sec * 2.3 + k)) : 1;
-          pulse(q, u, dir, rgb, a0 * fl * A, v, sec);
+          const fl = d.target === 'VGR1' ? 0.4 + 0.6 * Math.abs(Math.sin(sec * 2.3 + E.times[k])) : 1;
+          pulse(q, u, dir, rgb, a0 * fl * A * crowd, v, sec);
         }
       }
     }
