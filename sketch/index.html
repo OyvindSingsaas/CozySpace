@@ -990,6 +990,51 @@ function drawISS(x, y, ang, lit) {
 
 const SMOOTH = {}, SEEN = {}, FIRST = {};
 
+// ======================= the Arecibo message =======================
+// the 1 679 bits sent from Arecibo on 16 Nov 1974 (Drake, Sagan et al.): 73 rows × 23 columns, both prime.
+// hovering its arc replays the transmission at the original 10 bit/s (168 s): the picture builds bit by bit,
+// and with sound on each bit is a soft tone, one pitch for 0 and another for 1 (the real signal shifted
+// between two frequencies 10 Hz apart at 2 380 MHz)
+const ARECIBO_BITS = '00000010101010000000000001010000010100000001001000100010001001011001010101010101010100100100000000000000000000000000000000000001100000000000000000001101000000000000000000011010000000000000000001010100000000000000000011111000000000000000000000000000000001100001110001100001100010000000000000110010000110100011000110000110101111101111101111101111100000000000000000000000000100000000000000000100000000000000000000000000001000000000000000001111110000000000000111110000000000000000000000011000011000011100011000100000001000000000100001101000011000111001101011111011111011111011111000000000000000000000000001000000110000000001000000000001100000000000000010000011000000000011111100000110000001111100000000001100000000000001000000001000000001000001000000110000000100000001100001100000010000000000110001000011000000000000000110011000000000000011000100001100000000011000011000000100000001000000100000000100000100000001100000000100010000000011000000001000100000000010000000100000100000001000000010000000100000000000011000000000110000000011000000000100011101011000000000001000000010000000000000010000011111000000000000100001011101001011011000000100111001001111111011100001110000011011100000000010100000111011001000000101000001111110010000001010000011000000100000110110000000000000000000000000000000000011100000100000000000000111010100010101010101001110000000001010101000000000000000010100000000000000111110000000000000000111111111000000000000111000000011100000000011000000000001100000001101000000000101100000110011000000011001100001000101000001010001000010001001000100100010000000010001010001000000000000100001000010000000000001000000000100000000000000100101000000000001111001111101001111000';
+const ARECIBO = { start: null };
+function areciboTones(C) {
+  const o = C.createOscillator(), g = C.createGain(), lp = C.createBiquadFilter(), t0 = C.currentTime + 0.05;
+  o.type = 'sine'; lp.type = 'lowpass'; lp.frequency.value = 2200;
+  g.gain.setValueAtTime(0.0001, t0);
+  for (let i = 0; i < ARECIBO_BITS.length; i++) {
+    const tb = t0 + i * 0.1, one = ARECIBO_BITS[i] === '1';
+    o.frequency.setValueAtTime(one ? 784 : 659, tb);                      // G5 for 1, E5 for 0: a gentle interval
+    g.gain.setValueAtTime(0.0001, tb); g.gain.exponentialRampToValueAtTime(one ? 0.05 : 0.025, tb + 0.012);
+    g.gain.exponentialRampToValueAtTime(0.0001, tb + 0.09);
+  }
+  o.connect(lp).connect(g); g.connect(AUDIO.master); g.connect(AUDIO.verb);
+  o.start(t0); o.stop(t0 + ARECIBO_BITS.length * 0.1 + 0.2);
+  ARECIBO.osc = o;
+}
+function drawArecibo(sec) {
+  if (ARECIBO.start === null || !EXOTIC.arecibo) return;
+  const el = sec - ARECIBO.start, n = Math.min(ARECIBO_BITS.length, Math.floor(el * 10));
+  const fadeOut = Math.max(0, Math.min(1, (ARECIBO_BITS.length / 10 + 12 - el) / 4)), fadeIn = Math.min(1, el / 0.8), A = fadeIn * fadeOut;
+  if (A <= 0) { ARECIBO.start = null; return; }
+  const cs = Math.max(2.4, Math.min(3.4, (H - 140) / 73)), pw = 23 * cs, ph = 73 * cs;
+  const [ax, ay] = EXOTIC.arecibo;
+  let px = ax + 26, py = ay - ph / 2;                                  // beside the arc, kept on screen
+  if (px + pw > W - 20) px = ax - 26 - pw;
+  py = Math.max(60, Math.min(H - ph - 40, py));
+  ctx.save(); ctx.globalAlpha = A;
+  ctx.fillStyle = 'rgba(8,10,28,0.72)'; ctx.beginPath(); ctx.roundRect(px - 10, py - 26, pw + 20, ph + 44, 10); ctx.fill();
+  ctx.font = FONT(9); ctx.fillStyle = 'rgba(255,215,160,0.75)'; ctx.textAlign = 'center';
+  ctx.fillText(`arecibo · 16 nov 1974 · ${n} / 1679 bits`, px + pw / 2, py - 10);
+  for (let i = 0; i < n; i++) {
+    const x = px + (i % 23) * cs, y = py + Math.floor(i / 23) * cs, fresh = i > n - 12;
+    if (ARECIBO_BITS[i] === '1') { ctx.fillStyle = fresh ? 'rgba(255,245,220,1)' : 'rgba(255,205,140,0.9)'; ctx.fillRect(x, y, cs - 0.6, cs - 0.6); }
+    else { ctx.fillStyle = 'rgba(255,205,140,0.07)'; ctx.fillRect(x, y, cs - 0.6, cs - 0.6); }
+  }
+  if (n < ARECIBO_BITS.length) { const x = px + (n % 23) * cs, y = py + Math.floor(n / 23) * cs;   // the bit being sent now
+    glow(x + cs / 2, y + cs / 2, 6, '255,230,180', 0.8); }
+  ctx.textAlign = 'left'; ctx.restore();
+}
+
 // ======================= sound =======================
 // a generated ambient pad (slow drifting chords, a hush of solar wind) plus recorded clips played on hover,
 // panned to where the object is and set in a soft reverb. off until the speaker button is pressed
@@ -1537,6 +1582,8 @@ function frame() {
     const spot = k => pos[k] || (EXOTIC.hover.find(h => h.key === k) && [EXOTIC.hover.find(h => h.key === k).x, EXOTIC.hover.find(h => h.key === k).y]);
     if (MOUSE.on) for (const k of Object.keys(OBJECT_SOUNDS)) { const P = spot(k); if (P && Math.hypot(P[0] - MOUSE.x, P[1] - MOUSE.y) < (k === 'SGRA' ? 20 : 14)) over = k; }
     if (over && over !== frame.overSound && AUDIO.on) { const P = spot(over); hoverSound(over, P[0], P[1], sec); }
+    const onArecibo = MOUSE.on && EXOTIC.arecibo && Math.hypot(MOUSE.x - EXOTIC.arecibo[0], MOUSE.y - EXOTIC.arecibo[1]) < 16;
+    if (onArecibo && ARECIBO.start === null) { ARECIBO.start = sec; if (AUDIO.on && AUDIO.ctx) areciboTones(AUDIO.ctx); }
     frame.overSound = over;
     const pl = AUDIO.playing;
     if (pl && sec < pl.until && spot(pl.key)) {                      // a quiet caption above the object while its clip plays
@@ -1546,6 +1593,8 @@ function frame() {
     }
   }
 
+  drawArecibo(sec);
+
   // ---- hover: names for the natural world
   if (MOUSE.on) {
     const all = HOVER.concat(EXOTIC.hover);
@@ -1554,7 +1603,7 @@ function frame() {
     let name = hit && hit.name;
     if (!name && !frame.overSound) {
       const dist = Math.hypot(MOUSE.x - cx, MOUSE.y - cy);
-      if (EXOTIC.arecibo && Math.hypot(MOUSE.x - EXOTIC.arecibo[0], MOUSE.y - EXOTIC.arecibo[1]) < 16)
+      if (EXOTIC.arecibo && Math.hypot(MOUSE.x - EXOTIC.arecibo[0], MOUSE.y - EXOTIC.arecibo[1]) < 16 && ARECIBO.start === null)
         name = `the arecibo message · sent toward M13 in 1974, ${Math.round(EXOTIC.radioYears - 73)} light-years out`;
       else if (EXOTIC.rRadio && Math.abs(dist - EXOTIC.rRadio) < 8)
         name = `our first radio, 1901 · the edge of humanity's signals, ${EXOTIC.radioYears.toFixed(1)} light-years out`;
