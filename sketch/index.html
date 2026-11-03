@@ -531,6 +531,7 @@ function dest([lon, lat], brg, dist) {
 // travel profile along a path (s = 1 at the spacecraft, 0 at the station): time spent on each step is the
 // real light-time, or the time needed at the screen speed limit, whichever is longer
 const VPX = +params.get('vmax') || 120, TABLES = new Map();
+const BITS_PER_PACKET = 8e6 * (+params.get('mb') || 1), MIN_GAP = 2, UPLINK_EVERY = 300;   // 1 packet = 1 MB
 function travelTable(dT, Lp) {
   const key = Math.round(Math.log10(dT) * 300) + '|' + Math.round(Lp / 4);
   if (TABLES.has(key)) return TABLES.get(key);
@@ -904,12 +905,14 @@ function frame() {
       // real light speed, with a speed limit on screen: a packet moves at c (on the log scale) until that would
       // exceed VPX px/s, then glides at VPX. far out: true speed; near Earth: a few seconds' grace.
       const dT = S[d.target].d, Lp = qLen(q), Tl = dT / C_KMS, tab = travelTable(dT, Lp);
-      const rate = Math.max(1, ...downs.map(x => x.rate));
-      const gap = Math.max(0.5, Tl / (2 + 0.8 * Math.log10(rate + 1)));     // a few packets in flight; more for higher data rates
-      const tnow = t / 1000, phase = hash(d.dish + d.target) * gap;
-      for (const [on, dir, rgb, a0] of [[downs.length, -1, '255,190,120', strength], [ups.length, 1, '130,225,255', 0.7]]) {
+      // one packet = one megabyte. downlink: the real data rate sets how often one leaves the spacecraft.
+      // uplinks report no rate in the feed, so a command packet goes up every UPLINK_EVERY seconds.
+      const rate = downs.reduce((a, x) => a + x.rate, 0);                  // bit/s, summed over the dish's downlink channels
+      const gapDown = rate > 0 ? Math.max(MIN_GAP, BITS_PER_PACKET / rate) : null;
+      const tnow = t / 1000;
+      for (const [on, dir, rgb, a0, g] of [[downs.length && gapDown, -1, '255,190,120', strength, gapDown], [ups.length, 1, '130,225,255', 0.7, UPLINK_EVERY]]) {
         if (!on) continue;
-        const g = dir > 0 ? gap * 2 : gap, k0 = Math.floor((tnow - phase) / g);   // uplinks: sparser
+        const phase = hash(d.dish + d.target + dir) * g, k0 = Math.floor((tnow - phase) / g);
         let last = -1;
         for (let k = Math.ceil(tab.T / g); k >= 0; k--) {
           const age = tnow - (phase + (k0 - k) * g);
