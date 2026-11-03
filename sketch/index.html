@@ -1626,12 +1626,20 @@ function render() {
         if (!on) continue;
         // each packet keeps the time it left; a change in data rate only affects packets not yet sent
         const E = d['emit' + dir] || (d['emit' + dir] = { times: [], next: null });
-        if (E.next === null && d.fresh) { E.times = []; E.next = tnow; }   // new contact: nothing in flight yet
+        // a new contact. uplink: commands start leaving the dish now, so the path starts empty. downlink: the craft was
+        // already transmitting (Voyager always is; others switch on one light-time before the pass), so the data that
+        // reaches the dish from now on is already on its way: the path starts full
+        if (E.next === null && d.fresh && dir > 0) { E.times = []; E.next = tnow; }
         else if (E.next === null || (d.want && tnow - E.next > tab.T) || tnow < (E.times[0] ?? tnow) - 1) {   // seen at load, or a jump in time: fill the path
           E.times = []; for (let tt = tnow - hash(d.dish + d.target + dir) * g; tt > tnow - tab.T; tt -= g) E.times.unshift(tt);
           E.next = (E.times.length ? E.times[E.times.length - 1] : tnow - g) + g;
         }
-        if (d.want) {                                 // ended links send nothing new; what's in flight finishes its trip
+        // a contact ends. uplink: commands already sent still arrive, so they finish their trip. downlink: no one is
+        // listening any more, so what's still on its way will never be received: it fades out where it is
+        let gone = 1;
+        if (dir < 0 && !d.want) { E.endT ??= tnow; gone = 1 - (tnow - E.endT) / 3; if (gone <= 0) E.times = []; }
+        else E.endT = undefined;
+        if (d.want) {
           E.next = Math.min(E.next, (E.times.length ? E.times[E.times.length - 1] : tnow) + g);   // a higher rate kicks in at once
           while (E.next <= tnow) { E.times.push(E.next); E.next += g; }
         }
@@ -1646,7 +1654,7 @@ function render() {
           if (crowd <= 0) continue;
           const v = Math.abs(u - sAt(tab, Math.min(tab.T, tl + 0.1))) / 0.1 * Lp;   // screen speed, px/s
           const fl = d.target === 'VGR1' ? 0.4 + 0.6 * Math.abs(Math.sin(sec * 2.3 + E.times[k])) : 1;
-          pulse(q, u, dir, rgb, a0 * fl * crowd, v, sec);
+          pulse(q, u, dir, rgb, a0 * fl * crowd * Math.max(0, gone), v, sec);
         }
       }
     }
