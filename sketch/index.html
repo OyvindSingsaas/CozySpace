@@ -1353,7 +1353,7 @@ function render() {
     S[k] = { kind: 'craft', d: S[par].d, lam: S[par].lam, parent: par };
   }
   const sunAng = TH.SUN;
-  SPOTS.length = 0;
+  SPOTS.length = 0; TEXT_BOXES.length = 0;
   const p = makeProjection(s, sunAng), path = d3.geoPath(p, ctx);
   ctx.setTransform(DPR, 0, 0, DPR, 0, 0);
 
@@ -1533,7 +1533,8 @@ function render() {
         drawISS(P.x, P.y, heading + Math.PI / 2, lit); SPOTS.push({ key: 'ISS', x: P.x, y: P.y });                                         // modules along the flight path, truss across it
         const ux = P.x - cx, uy = P.y - cy, ul = Math.hypot(ux, uy) || 1;
         ctx.font = FONT(10); ctx.fillStyle = 'rgba(225,226,245,0.8)'; ctx.textAlign = ux < 0 ? 'right' : 'left';
-        ctx.fillText('ISS', P.x + ux / ul * 20 + (ux < 0 ? -4 : 4), P.y + uy / ul * 20 + 3); ctx.textAlign = 'left';
+        const ix = P.x + ux / ul * 20 + (ux < 0 ? -4 : 4), iy = P.y + uy / ul * 20 + 3, iw = ctx.measureText('ISS').width;
+        ctx.fillText('ISS', ix, iy); ctx.textAlign = 'left'; TEXT_BOXES.push({ x: ux < 0 ? ix - iw : ix, y: iy - 10, w: iw, h: 13 });
       }
     }
   }
@@ -1581,23 +1582,29 @@ function render() {
       });
       ctx.font = FONT(10); ctx.fillStyle = 'rgba(255,225,170,0.7)';
       ctx.textAlign = nx < 0 ? 'right' : 'left';
-      ctx.fillText(name.toLowerCase(), pt[0] + (nx < 0 ? -10 : 10) + nx * 6, pt[1] + 14 + ny * 6);
+      const lx = pt[0] + (nx < 0 ? -10 : 10) + nx * 6, ly = pt[1] + 14 + ny * 6, tw = ctx.measureText(name).width;
+      ctx.fillText(name.toLowerCase(), lx, ly); TEXT_BOXES.push({ x: nx < 0 ? lx - tw : lx, y: ly - 10, w: tw, h: 13 });
     } else {
       ctx.font = FONT(10); ctx.fillStyle = 'rgba(255,225,170,0.35)';
-      const txt = name.toLowerCase() + ' · far side', tw = ctx.measureText(txt).width;
+      const txt = name.toLowerCase(), tw = ctx.measureText(txt).width;
       let lx = nx < 0 ? pt[0] + nx * 14 - tw : pt[0] + nx * 14;
       lx = Math.max(10, Math.min(W - tw - 10, lx));
       ctx.textAlign = 'left';
-      ctx.fillText(txt, lx, pt[1] + ny * 14 + (Math.abs(nx) > 0.9 ? 16 : 4));
+      const ly = pt[1] + ny * 14 + (Math.abs(nx) > 0.9 ? 16 : 4);
+      ctx.fillText(txt, lx, ly); TEXT_BOXES.push({ x: lx, y: ly - 10, w: tw, h: 13 });
     }
     ctx.textAlign = 'left';
   }
 
-  // ---- signals: hairline paths, pulses carry the motion. faded where they cross the disc
+  // ---- signals: hairline paths, pulses carry the motion. faded where they cross the disc.
+  // wherever there's text (station names now, sky labels as placed last frame) the signals are clipped away,
+  // so packets slip behind the words instead of across them
+  const cut = TEXT_BOXES.concat(SIG.last);
   for (const pass of ['disc', 'space']) {
     ctx.save(); ctx.beginPath();
     if (pass === 'disc') ctx.arc(cx, cy, R, 0, 6.283); else { ctx.rect(0, 0, W, H); ctx.arc(cx, cy, R, 0, 6.283, true); }
-    ctx.clip(); ctx.globalAlpha = pass === 'disc' ? 0.3 : 1; ctx.lineCap = 'round';
+    ctx.clip();
+    ctx.beginPath(); ctx.rect(0, 0, W, H); for (const b of cut) ctx.rect(b.x - 3, b.y - 2, b.w + 6, b.h + 4); ctx.clip('evenodd'); ctx.globalAlpha = pass === 'disc' ? 0.3 : 1; ctx.lineCap = 'round';
     for (const d of LINKS.values()) {
       if (!pos[d.target] || !stPos[d.station]) continue;
       const q = quad(stPos[d.station].pt, pos[d.target]);
@@ -1733,6 +1740,7 @@ function render() {
     }
     if (!box) box = { x: L.x + g, y: L.y - 9, w, h };
     boxes.push(box);
+    SIG.next.push(box);                                          // one cut-out per label (overlapping cut-outs would cancel)
     ctx.textAlign = 'left'; ctx.globalAlpha = L.alpha ?? 1;
     ctx.font = FONT(11, L.main ? 500 : 400);
     ctx.fillStyle = L.main ? 'rgba(240,226,200,0.6)' : L.on ? 'rgba(225,226,245,0.8)' : 'rgba(170,175,215,0.42)';
@@ -1743,6 +1751,7 @@ function render() {
     ctx.globalAlpha = 1;
   }
   ctx.textAlign = 'left';
+  SIG.last = SIG.next; SIG.next = [];
 
   // ---- quiet header
   const open = DISHES.filter(d => active(d) && !NOT_CRAFT.has(d.target)).length, idle = DISHES.filter(d => !active(d) && d.target && !NOT_CRAFT.has(d.target)).length;
@@ -1832,7 +1841,8 @@ function render() {
 
 }
 // ---- stories: hovering a spacecraft, the ISS or a rising rocket tells its short story in a box, lower right
-const SPOTS = [];
+const SPOTS = [], TEXT_BOXES = [];
+const SIG = { last: [], next: [] };   // sky-label text boxes, kept from one frame to the next
 const STORY = { el: document.getElementById('story'), key: null, on: (() => { try { return localStorage.getItem('cozyspace.stories') !== 'off'; } catch (e) { return true; } })(), left: 0 };
 const esc = x => String(x).replace(/[&<>"]/g, c => ({ '&': '&amp;', '<': '&lt;', '>': '&gt;', '"': '&quot;' }[c]));
 function storyHTML(key, S, t) {
