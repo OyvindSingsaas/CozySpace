@@ -1,0 +1,10 @@
+# DSN logs (large, regenerated)
+data/dsn_log*.csv
+
+# Python
+__pycache__/
+*.pyc
+.venv/
+
+# macOS
+.DS_Store

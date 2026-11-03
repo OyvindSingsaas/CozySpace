@@ -1,0 +1,842 @@
+<!doctype html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width,initial-scale=1">
+<title>CozySpace</title>
+<link rel="preconnect" href="https://fonts.googleapis.com">
+<link href="https://fonts.googleapis.com/css2?family=Space+Grotesk:wght@400;500&display=swap" rel="stylesheet">
+<style>
+  :root { --bg:#080a1c; --dim:#7c80a8; }
+  html,body { margin:0; height:100%; background:var(--bg); overflow:hidden; }
+  canvas { display:block; width:100vw; height:100vh; }
+</style>
+</head>
+<body>
+<canvas id="c"></canvas>
+
+<script src="https://cdn.jsdelivr.net/npm/d3@7.9.0/dist/d3.min.js"></script>
+<script src="https://cdn.jsdelivr.net/npm/topojson-client@3.1.0/dist/topojson-client.min.js"></script>
+<script src="../data/ephemeris.js"></script><!-- JPL Horizons, from scripts/fetch_ephemeris.py (optional: formulas are the fallback) -->
+<script>
+// ======================= data (static snapshot; later the live feed) =======================
+const SNAP = [{"station":"Goldstone","dish":"DSS14","target":"DSN","signals":[]},{"station":"Goldstone","dish":"DSS25","target":"ESCG","signals":[{"dir":"up","rate":0,"power":0.2},{"dir":"down","rate":8000,"power":-120}]},{"station":"Goldstone","dish":"DSS26","target":"JWST","signals":[]},{"station":"Goldstone","dish":"DSS23","target":"MMS2","signals":[]},{"station":"Madrid","dish":"DSS55","target":"DSN","signals":[]},{"station":"Madrid","dish":"DSS54","target":"MSL","signals":[]},{"station":"Madrid","dish":"DSS63","target":"STA","signals":[{"dir":"up","rate":0,"power":10},{"dir":"down","rate":720000,"power":-120}]},{"station":"Madrid","dish":"DSS53","target":"LRO","signals":[]},{"station":"Madrid","dish":"DSS56","target":"SOHO","signals":[{"dir":"up","rate":0,"power":0.1},{"dir":"down","rate":245800,"power":-110}]},{"station":"Madrid","dish":"DSS65","target":"KPLO","signals":[{"dir":"up","rate":0,"power":0.2},{"dir":"down","rate":8192,"power":-110}]},{"station":"Canberra","dish":"DSS43","target":"VGR1","signals":[{"dir":"down","rate":159.4,"power":-170}]},{"station":"Canberra","dish":"DSS35","target":"WIND","signals":[{"dir":"up","rate":0,"power":0.2},{"dir":"down","rate":6400,"power":-130},{"dir":"down","rate":73510,"power":-130}]},{"station":"Canberra","dish":"DSS34","target":"SPP","signals":[{"dir":"up","rate":0,"power":18},{"dir":"down","rate":397500,"power":-140}]},{"station":"Canberra","dish":"DSS36","target":"ACE","signals":[{"dir":"up","rate":0,"power":0.1},{"dir":"down","rate":0,"power":-120}]}];
+
+const STATIONS = { Goldstone:[-116.89,35.43], Madrid:[-4.25,40.43], Canberra:[148.98,-35.40] };
+const NAMES = { ESCG:'ESCAPADE', JWST:'JWST', MMS2:'MMS', MSL:'Curiosity', STA:'STEREO-A', LRO:'LRO',
+  SOHO:'SOHO', KPLO:'Danuri', VGR1:'Voyager 1', VGR2:'Voyager 2', WIND:'Wind', SPP:'Parker', ACE:'ACE' };
+// where craft live, for any target the feed brings that isn't placed explicitly in sky()
+const HOME = {
+  MOON: ['LRO', 'KPLO', 'CAPS', 'THB', 'THC', 'CH2O', 'CH2L', 'SLIM', 'LUPX', 'BLUE', 'IM2', 'ORIO', 'ART2'],
+  MARS: ['MRO', 'MVN', 'M20', 'MSL', 'ODY', 'TGO', 'MEX', 'EMM', 'M01O'],
+  JUP:  ['JNO'],
+  L1:   ['SOHO', 'ACE', 'WIND', 'DSCO', 'IMAP', 'AL1', 'SWFO', 'CARR'],
+  L2:   ['JWST', 'EUCL', 'GAIA', 'SPHX', 'PLAT'],
+  EARTH:['MMS1', 'MMS2', 'MMS3', 'MMS4', 'CHDR', 'TESS', 'GTL', 'XMM', 'IBEX', 'TDR', 'NSYT'],
+};
+const NOT_CRAFT = new Set(['DSN', 'DSS', '']);        // maintenance / testing placeholders in the feed
+const homeOf = k => Object.keys(HOME).find(h => HOME[h].includes(k));
+const ALWAYS_ORBITING = ['LRO', 'KPLO', 'MSL'];                  // shown at their body even when quiet
+const hash = (str, n = 1) => { let h = 2166136261; for (const c of str) h = Math.imul(h ^ c.charCodeAt(0), 16777619); return mod(h * n, 1e6) / 1e6; };
+
+// ======================= NOAA OVATION aurora =======================
+// the live grid is reduced to the oval's shape: for each 3° bearing around each geomagnetic pole,
+// an intensity-weighted mean distance from the pole and a peak intensity. the ribbon is drawn from that.
+let AURORA = null;
+function bearing([lo1, la1], [lo2, la2]) {
+  const p1 = la1 * RAD, p2 = la2 * RAD, dl = (lo2 - lo1) * RAD;
+  return mod(Math.atan2(Math.sin(dl) * Math.cos(p2), Math.cos(p1) * Math.sin(p2) - Math.sin(p1) * Math.cos(p2) * Math.cos(dl)) / RAD, 360);
+}
+async function pollAurora() {
+  try {
+    const j = await (await fetch('https://services.swpc.noaa.gov/json/ovation_aurora_latest.json')).json();
+    const NB = 120, mk = () => ({ w: new Float64Array(NB), rw: new Float64Array(NB), max: new Float64Array(NB) });
+    const B = { N: mk(), S: mk() };
+    for (const [lon, lat, v] of j.coordinates) {
+      if (v < 2 || Math.abs(lat) < 35) continue;
+      const pole = lat > 0 ? GEOMAG_N : GEOMAG_S, b = lat > 0 ? B.N : B.S;
+      const dist = d3.geoDistance(pole, [lon, lat]) / RAD;
+      if (dist > 45) continue;
+      const i = Math.floor(bearing(pole, [lon, lat]) / 3) % NB;
+      b.w[i] += v; b.rw[i] += v * dist; b.max[i] = Math.max(b.max[i], v);
+    }
+    const out = {};
+    for (const h of ['N', 'S']) {
+      const b = B[h], r = [], v = [];
+      for (let i = 0; i < NB; i++) {                 // circular smoothing over ±4 bins, so gaps fill in gently
+        let w = 0, rw = 0, m = 0, k = 0;
+        for (let o = -4; o <= 4; o++) { const q = mod(i + o, NB); w += b.w[q]; rw += b.rw[q]; m += b.max[q]; k++; }
+        r.push(w > 0 ? rw / w : null); v.push(Math.min(1.6, m / k / 22));
+      }
+      out[h] = { r, v };
+    }
+    AURORA = { ...out, at: j['Observation Time'] };
+  } catch (e) { /* keep the model oval */ }
+  setTimeout(pollAurora, 10 * 60 * 1000);
+}
+pollAurora();
+
+// ======================= live DSN feed =======================
+let DISHES = SNAP, FRIENDLY = {}, FEED = { live: false, at: null };
+const LINKS = new Map();                       // 'dish|target' -> link, eased in and out as the feed changes
+function ingest(list) {
+  DISHES = list;
+  for (const L of LINKS.values()) L.want = 0;
+  for (const d of list) {
+    if (!d.signals.length || !d.target || NOT_CRAFT.has(d.target)) continue;
+    const key = d.dish + '|' + d.target, L = LINKS.get(key) || { alpha: 0 };
+    LINKS.set(key, Object.assign(L, d, { want: 1 }));
+  }
+}
+ingest(SNAP);
+async function pollDSN() {
+  try {
+    const r = await fetch('https://eyes.nasa.gov/dsn/data/dsn.xml?r=' + Date.now());
+    const x = new DOMParser().parseFromString(await r.text(), 'text/xml'), list = [];
+    let st = '';
+    for (const e of x.documentElement.children) {
+      if (e.tagName === 'station') st = e.getAttribute('friendlyName');
+      else if (e.tagName === 'dish') {
+        const t = e.querySelector('target');
+        const signals = [...e.children]
+          .filter(c => (c.tagName === 'upSignal' || c.tagName === 'downSignal') && c.getAttribute('active') === 'true')
+          .map(c => ({ dir: c.tagName === 'upSignal' ? 'up' : 'down', rate: +c.getAttribute('dataRate') || 0,
+                       power: +c.getAttribute('power') || 0, band: c.getAttribute('band') }));
+        list.push({ station: st, dish: e.getAttribute('name'), target: t ? t.getAttribute('name').toUpperCase() : '',
+                    rtlt: t ? +t.getAttribute('rtlt') : -1, signals });
+      }
+    }
+    if (list.length) { ingest(list); FEED = { live: true, at: Date.now() }; }
+  } catch (e) { FEED.live = false; }
+  setTimeout(pollDSN, 10000);
+}
+fetch('https://eyes.nasa.gov/dsn/config.xml').then(r => r.text()).then(t => {
+  for (const sc of new DOMParser().parseFromString(t, 'text/xml').querySelectorAll('spacecraft'))
+    FRIENDLY[sc.getAttribute('name').toUpperCase()] = sc.getAttribute('friendlyName');
+}).catch(() => {});
+pollDSN();
+const nameOf = k => NAMES[k] || FRIENDLY[k] || k;
+const GEOMAG_N = [-72.6, 80.8], GEOMAG_S = [107.4, -80.8];
+
+// ======================= time =======================
+const params = new URLSearchParams(location.search);
+const SPEED = +params.get('speed') || 1;
+const T0 = Date.now();
+const now = () => T0 + (Date.now() - T0) * SPEED;
+const J2000 = 946728000000, RAD = Math.PI / 180, C_KMS = 299792.458, AU = 1.495978707e8;
+const mod = (a, m) => ((a % m) + m) % m;
+
+// ======================= astronomy (low precision: a mood piece) =======================
+function sun(t) {
+  const n = (t - J2000) / 864e5;
+  const L = 280.460 + 0.9856474 * n, g = (357.528 + 0.9856003 * n) * RAD;
+  const lam = L + 1.915 * Math.sin(g) + 0.020 * Math.sin(2 * g);
+  const eps = (23.439 - 4e-7 * n) * RAD, l = lam * RAD;
+  const dec = Math.asin(Math.sin(eps) * Math.sin(l));
+  const ra = Math.atan2(Math.cos(eps) * Math.sin(l), Math.cos(l)) / RAD;
+  const gmst = 280.46061837 + 360.98564736629 * n;
+  return { lam: mod(lam, 360), lon: mod(ra - gmst + 180, 360) - 180, lat: dec / RAD, n };
+}
+function helioToGeo(lh, rh, lsun) {            // heliocentric (deg, AU) -> geocentric ecliptic lon, km
+  const le = (lsun + 180) * RAD;
+  const x = rh * Math.cos(lh * RAD) - Math.cos(le), y = rh * Math.sin(lh * RAD) - Math.sin(le);
+  return { lam: mod(Math.atan2(y, x) / RAD, 360), d: Math.hypot(x, y) * AU };
+}
+// JPL Horizons table (window.EPHEMERIS), interpolated; null outside its range -> callers fall back to formulas
+function eph(key, t) {
+  const E = window.EPHEMERIS, rows = E && E.objects[key];
+  if (!rows) return null;
+  const f = (t - Date.parse(E.start)) / (E.stepDays * 864e5);
+  if (f < 0 || f > rows.length - 1) return null;
+  const i = Math.min(rows.length - 2, Math.floor(f)), u = f - i, [l0, d0] = rows[i], [l1, d1] = rows[i + 1];
+  return { lam: mod(l0 + (mod(l1 - l0 + 180, 360) - 180) * u, 360), d: Math.exp(Math.log(d0) * (1 - u) + Math.log(d1) * u) };
+}
+const planet = (L0, rate, a) => (n, ls) => helioToGeo(mod(L0 + rate * n, 360), a, ls);
+const MERC = planet(252.25, 4.0923344, 0.3871), VENUS = planet(181.98, 1.6021302, 0.7233), MARS = planet(355.45, 0.5240208, 1.5237),
+      JUP = planet(34.35, 0.0830853, 5.2026),    SAT = planet(50.08, 0.0334442, 9.5549),
+      URA = planet(313.23, 0.0117258, 19.19),    NEP = planet(304.88, 0.0059810, 30.07),
+      PLU = planet(238.9, 0.0039757, 39.48);     // Pluto: mean motion; true heliocentric distance in 2026 is ~35 AU (approx)
+
+function sky(t, s) {
+  const n = s.n, ls = s.lam, le = ls + 180;
+  const days = (t - Date.parse('2026-11-14T00:00Z')) / 864e5;   // ~1 light-day mid-Nov 2026 (approx)
+  const S = {
+    // bodies
+    SUN:  { kind: 'sun',    lam: ls, d: AU },
+    MOON: { kind: 'moon',   lam: mod(218.316 + 13.176396 * n + 6.289 * Math.sin((134.963 + 13.064993 * n) * RAD), 360), d: 384400 },
+    MERC: { kind: 'planet', ...MERC(n, ls),  col: '#b9b0a6', r: 1.9, label: 'mercury' },
+    VENUS:{ kind: 'planet', ...VENUS(n, ls), col: '#f3e4bf', r: 2.6, label: 'venus' },
+    MARS: { kind: 'planet', ...MARS(n, ls),  col: '#e2836a', r: 2.6, label: 'mars' },
+    JUP:  { kind: 'planet', ...JUP(n, ls),   col: '#e6c79c', r: 4.2, label: 'jupiter' },
+    SAT:  { kind: 'planet', ...SAT(n, ls),   col: '#e3d2a2', r: 3.4, label: 'saturn', ring: true },
+    URA:  { kind: 'planet', ...URA(n, ls),   col: '#a9dbe3', r: 2.8, label: 'uranus' },
+    NEP:  { kind: 'planet', ...NEP(n, ls),   col: '#7393ea', r: 2.8, label: 'neptune' },
+    PLU:  { kind: 'planet', ...helioToGeo(mod(303 + 1.45 * (n - 9800) / 365.25, 360), 34.8, ls), col: '#d8c3a6', r: 1.6, label: 'pluto' },
+    // spacecraft
+    MMS2: { kind: 'craft', lam: ls + 140, d: 1.2e5 },
+    SOHO: { kind: 'craft', lam: ls, d: 1.5e6 }, ACE: { kind: 'craft', lam: ls, d: 1.5e6 }, WIND: { kind: 'craft', lam: ls, d: 1.5e6 },
+    JWST: { kind: 'craft', lam: le, d: 1.5e6 },
+    ESCG: { kind: 'craft', lam: ls + 120, d: 6e6 },
+    SPP:  { kind: 'craft', ...helioToGeo(le + 150, 0.5, ls) },
+    STA:  { kind: 'craft', ...helioToGeo(le + 70, 0.96, ls) },
+    VGR1: { kind: 'craft', lam: 255.5, d: 25.902e9 + days * 1.5e6 },
+    VGR2: { kind: 'craft', lam: 290,   d: 2.11e10 },
+    NHPC: { kind: 'craft', lam: 287,   d: 66 * AU },             // New Horizons
+  };
+  for (const [k, v] of Object.entries(S)) { const e = eph(k, t); if (e) Object.assign(v, e); }   // real positions where we have them
+  return S;
+}
+
+// ======================= layout =======================
+const cv = document.getElementById('c'), ctx = cv.getContext('2d');
+let W, H, R, cx, cy, DPR;
+const WEDGE = [3, 52];                          // screen angles for the sky (deg, ccw from +x)
+let R0, RMAX, BACKDROP, STARS = [], EXOTIC = {};
+function resize() {
+  DPR = Math.min(devicePixelRatio || 1, 2);
+  W = innerWidth; H = innerHeight;
+  cv.width = W * DPR; cv.height = H * DPR;
+  R = Math.min(H * 0.2, W * 0.15);
+  cx = 64 + R + W * 0.02; cy = H - 64 - R - H * 0.03;
+  R0 = R + 36;
+  RMAX = Infinity;                              // one radius for all directions: isotropic log scale
+  for (let th = WEDGE[0]; th <= WEDGE[1]; th++) RMAX = Math.min(RMAX, edgeDist(th));
+  buildBackdrop();
+}
+
+const wedgeFrac = (lam, ls) => mod(lam - (ls - 15), 360) / 360;
+function spreadAngles(S, ls) {                  // 40% true angle + 60% rank: order kept, clumps opened
+  const ks = Object.keys(S).sort((a, b) => wedgeFrac(S[a].lam, ls) - wedgeFrac(S[b].lam, ls) || S[a].d - S[b].d);
+  const out = {};
+  ks.forEach((k, i) => out[k] = WEDGE[0] + (WEDGE[1] - WEDGE[0]) * (0.4 * wedgeFrac(S[k].lam, ls) + 0.6 * (i + 0.5) / ks.length));
+  return out;
+}
+function edgeDist(th) {
+  const m = 80, c = Math.cos(th * RAD), s = Math.sin(th * RAD);
+  return Math.min(c > 1e-6 ? (W - m - cx) / c : 1e9, s > 1e-6 ? (cy - m) / s : 1e9);
+}
+function edge0(th) {                             // distance to the very screen edge
+  const c = Math.cos(th * RAD), s = Math.sin(th * RAD);
+  return Math.min(c > 1e-6 ? (W - cx) / c : 1e9, s > 1e-6 ? cy / s : 1e9);
+}
+const LIGHT_DAY = 2.5902e10;
+const LOG_D0 = Math.log10(2e5), GAMMA = 0.6;      // scale starts ~half a Moon distance out; gamma < 1 opens the inner system
+const logFrac = d => Math.max(0, (Math.log10(d) - LOG_D0) / (Math.log10(LIGHT_DAY) - LOG_D0)) ** GAMMA;   // 1 light-day -> 1
+const rOf = d => R0 + (RMAX - R0) * logFrac(d);
+const polar = (th, r) => [cx + r * Math.cos(th * RAD), cy - r * Math.sin(th * RAD)];
+const skyPos = (th, d) => polar(th, rOf(d));
+
+// camera fixed relative to the Sun; Earth turns underneath. Lit side faces the drawn Sun.
+function makeProjection(s, sunScreenAngle) {
+  const camLon = s.lon - 60, camLat = 24;
+  const p = d3.geoOrthographic().translate([cx, cy]).scale(R).clipAngle(90).precision(0.4);
+  const ang = () => {
+    const ctr = [camLon, camLat], sp = [s.lon, s.lat], dd = d3.geoDistance(ctr, sp);
+    const q = p(dd > 80 * RAD ? d3.geoInterpolate(ctr, sp)(80 * RAD / dd) : sp);
+    return Math.atan2(cy - q[1], q[0] - cx) / RAD;
+  };
+  p.rotate([-camLon, -camLat, 0]);
+  const a0 = ang();
+  p.rotate([-camLon, -camLat, sunScreenAngle - a0]);
+  if (Math.abs(mod(ang() - sunScreenAngle + 180, 360) - 180) > 1) p.rotate([-camLon, -camLat, a0 - sunScreenAngle]);
+  p.center_ = [camLon, camLat];
+  return p;
+}
+
+// ======================= helpers =======================
+function rng(seed) { return () => (seed = (seed * 1664525 + 1013904223) >>> 0) / 4294967296; }
+const HELIOPAUSE = 1.8e10;                       // ~120 AU: where the Sun's wind gives way to interstellar space
+const RINGS = [                                  // distance shown as drifting dust, not lines
+  { d: C_KMS,          label: 'light-second', rgb: '170,195,255' },
+  { d: C_KMS * 60,     label: 'light-minute', rgb: '255,214,170' },
+  { d: C_KMS * 3600,   label: 'light-hour',   rgb: '160,225,215' },
+  { d: C_KMS * 86400,  label: 'light-day',    rgb: '205,170,255' },
+  { d: 9.4607e12,      label: 'light-year',   rgb: '180,205,255' },
+  { d: 5e4 * 9.4607e12, label: 'edge of the milky way', rgb: '230,200,170' },
+];
+
+// the rest of the universe, at true (log) distance; direction from ecliptic longitude, mapped like the rest
+const LY = 9.4607e12;
+const DEEP = [
+  { name: 'proxima centauri', d: 4.246 * LY,  lam: 239.5, kind: 'star', rgb: '255,170,130', size: 1.5 },
+  { name: 'sirius',           d: 8.6 * LY,    lam: 104.1, kind: 'star', rgb: '205,225,255', size: 2.1 },
+  { name: 'betelgeuse',       d: 550 * LY,    lam: 88.8,  kind: 'star', rgb: '255,140,90',  size: 2.5 },
+  { name: 'vela pulsar',      d: 959 * LY,    lam: 152,   kind: 'pulsar' },
+  { name: 'orion nebula',     d: 1344 * LY,   lam: 83.6,  kind: 'nebula' },
+  { name: 'sgr a* · galactic centre', d: 26670 * LY, lam: 266.8, kind: 'blackhole' },
+  { name: 'andromeda',        d: 2.54e6 * LY, lam: 27.9,  kind: 'galaxy' },
+];
+const CMB = { d: 4.4e23, years: 13.8e9 };          // comoving distance to the last-scattering surface
+const OORT = [3e11, 1.5e13];                       // ~2 000 to ~100 000 AU
+const yearsText = y => y < 10 ? `${y.toFixed(1)} years`
+  : y < 1e5 ? `${Math.round(y / (y < 1000 ? 1 : 10)) * (y < 1000 ? 1 : 10)} years`.replace(/\B(?=(\d{3})+(?!\d))/g, ' ')
+  : y < 1e6 ? `${Math.round(y / 1000)} thousand years` : y < 1e9 ? `${(y / 1e6).toFixed(1)} million years` : `${(y / 1e9).toFixed(1)} billion years`;
+let BUILT_LS = null;
+
+// static deep-space layer: colour falls off with distance; beyond the heliopause, the rest of the universe
+function buildBackdrop(ls = sun(now()).lam) {
+  BUILT_LS = ls;
+  const r = rng(11);
+  BACKDROP = document.createElement('canvas');
+  BACKDROP.width = W * DPR; BACKDROP.height = H * DPR;
+  const b = BACKDROP.getContext('2d'); b.setTransform(DPR, 0, 0, DPR, 0, 0);
+  const outer = Math.hypot(W, H), st = d => Math.min(1, rOf(d) / outer);
+  const g = b.createRadialGradient(cx, cy, 0, cx, cy, outer);
+  g.addColorStop(0, '#1e2a5e'); g.addColorStop(R / outer, '#1e2a5e');
+  g.addColorStop(st(3e5), '#19214e'); g.addColorStop(st(AU), '#121941');
+  g.addColorStop(st(1.4e9), '#0b0f2e'); g.addColorStop(st(HELIOPAUSE), '#080920');
+  g.addColorStop(Math.min(1, (rOf(HELIOPAUSE) + 60) / outer), '#04040e'); g.addColorStop(1, '#020208');
+  b.fillStyle = g; b.fillRect(0, 0, W, H);
+
+  const rHP = rOf(HELIOPAUSE);
+  const bl = (x, y, rad, rgb, a) => { const q = b.createRadialGradient(x, y, 0, x, y, rad);
+    q.addColorStop(0, `rgba(${rgb},${a})`); q.addColorStop(1, `rgba(${rgb},0)`); b.fillStyle = q;
+    b.beginPath(); b.arc(x, y, rad, 0, 6.283); b.fill(); };
+  const onScreen = (x, y, m = 30) => x > m && x < W - m && y > m && y < H - m;
+  EXOTIC = { rHP, pulsar: null, hover: [], rC: rOf(CMB.d), oort: OORT.map(rOf) };
+  const label = (x, y, name, sub, rgb = '200,200,230', at = null, hr = 14) => {
+    EXOTIC.hover.push({ x: at ? at[0] : x, y: at ? at[1] : y, r: hr, name });
+    b.font = FONT(10); b.fillStyle = `rgba(${rgb},0.45)`; b.fillText(sub, x + 9, y + 4); };
+
+  // the cosmic microwave background: a warm, mottled glow at the edge of the observable universe
+  const rC = rOf(CMB.d);
+  { const q = b.createRadialGradient(cx, cy, rC - 50, cx, cy, rC + 120);
+    q.addColorStop(0, 'rgba(255,150,110,0)'); q.addColorStop(0.4, 'rgba(255,150,110,0.07)'); q.addColorStop(1, 'rgba(255,130,100,0.12)');
+    b.fillStyle = q; b.fillRect(0, 0, W, H); }
+  for (let i = 0; i < 260; i++) {
+    const a = r() * 6.283, rr = rC + r() * 400, x = cx + rr * Math.cos(a), y = cy - rr * Math.sin(a);
+    if (onScreen(x, y, -40)) bl(x, y, 12 + r() * 30, r() < 0.5 ? '255,160,120' : '255,120,150', 0.04 + r() * 0.05);
+  }
+  for (let th = 40; th > -40; th -= 1) { const [x, y] = polar(th, rC + 24);
+    if (onScreen(x, y, 60)) { b.textAlign = 'right'; label(x - 18, y, 'the oldest light · cosmic microwave background', yearsText(CMB.years) + ' old', '255,190,160', [x, y], 40); b.textAlign = 'left'; break; } }
+
+  // the Oort cloud: a vast, faint shell of ice
+  const [o1, o2] = OORT.map(rOf);
+  { const q = b.createRadialGradient(cx, cy, o1, cx, cy, o2);
+    q.addColorStop(0, 'rgba(150,185,255,0)'); q.addColorStop(0.5, 'rgba(150,185,255,0.045)'); q.addColorStop(1, 'rgba(150,185,255,0)');
+    b.fillStyle = q; b.beginPath(); b.arc(cx, cy, o2, 0, 6.283); b.arc(cx, cy, o1, 0, 6.283, true); b.fill(); }
+  for (let i = 0; i < 2600; i++) {
+    const a = r() * 6.283, rr = o1 + (o2 - o1) * (0.5 + 0.5 * Math.sin((r() - 0.5) * Math.PI)), x = cx + rr * Math.cos(a), y = cy - rr * Math.sin(a);
+    if (!onScreen(x, y, 0)) continue;
+    b.fillStyle = `rgba(200,220,255,${0.06 + r() * 0.22})`; b.beginPath(); b.arc(x, y, 0.4 + r() * 0.6, 0, 6.283); b.fill();
+  }
+  for (let th = 60; th > 0; th -= 1) { const [x, y] = polar(th, (o1 + o2) / 2);
+    if (onScreen(x, y, 50)) break; }
+
+  // deep objects: true distance; angles keep their order but are spread so labels breathe
+  const ks = DEEP.map((o, i) => i).sort((i, j) => wedgeFrac(DEEP[i].lam, ls) - wedgeFrac(DEEP[j].lam, ls));
+  ks.forEach((i, rank) => {
+    const o = DEEP[i], rr = rOf(o.d), ok = [];
+    for (let th = -60; th <= 90; th += 0.5) { const [x, y] = polar(th, rr); if (x > 40 && x < W - 170 && y > 50 && y < H - 50) ok.push(th); }
+    if (!ok.length) return;
+    const lo = ok[0], hi = ok[ok.length - 1], f = 0.4 * wedgeFrac(o.lam, ls) + 0.6 * (rank + 0.5) / DEEP.length;
+    const [x, y] = polar(lo + (hi - lo) * f, rr), yrs = yearsText(o.d / LY);
+    if (o.kind === 'star') {
+      bl(x, y, 9 * o.size, o.rgb, 0.22); b.fillStyle = `rgb(${o.rgb})`; b.beginPath(); b.arc(x, y, o.size, 0, 6.283); b.fill();
+      label(x, y, o.name, yrs, o.rgb);
+    } else if (o.kind === 'nebula') {
+      const cols = ['205,90,190', '95,160,230', '150,110,255', '90,220,200', '255,140,120'];
+      for (let k = 0; k < 40; k++) { const a = r() * 6.283, dd = Math.pow(r(), 0.7) * 55;
+        bl(x + Math.cos(a) * dd * 1.4, y + Math.sin(a) * dd * 0.8, 15 + r() * 55, cols[k % cols.length], 0.04 + r() * 0.06); }
+      bl(x, y, 10, '255,240,255', 0.25);
+      label(x + 40, y - 10, o.name, yrs, '230,170,230', [x, y], 40);
+    } else if (o.kind === 'galaxy') {
+      b.save(); b.translate(x, y); b.rotate(-0.5); b.scale(1, 0.38);
+      bl(0, 0, 46, '200,190,255', 0.14); bl(0, 0, 14, '255,235,210', 0.5);
+      for (let arm = 0; arm < 2; arm++) for (let t = 0; t < 9; t += 0.07) {
+        const rad = 3.5 * Math.exp(0.24 * t), a = t + arm * Math.PI;
+        b.fillStyle = `rgba(210,205,255,${0.35 * (1 - t / 9)})`;
+        b.beginPath(); b.arc(rad * Math.cos(a) + (r() - .5) * 3, rad * Math.sin(a) + (r() - .5) * 3, 0.8, 0, 6.283); b.fill();
+      }
+      b.restore(); label(x + 30, y, o.name, yrs, '210,205,255', [x, y], 30);
+    } else if (o.kind === 'blackhole') {
+      const tdir = Math.atan2(y - cy, x - cx) + Math.PI / 2;      // the crowded galactic core, stretched along the band
+      b.save(); b.translate(x, y); b.rotate(tdir); b.scale(1, 0.32);
+      bl(0, 0, 90, '255,210,160', 0.12); bl(0, 0, 35, '255,200,150', 0.18); b.restore();
+      for (let k = 0; k < 260; k++) { const u = (r() - 0.5) * 2, v = (r() - 0.5) * 2 * (1 - Math.abs(u)) * 0.35;
+        const px = x + Math.cos(tdir) * u * 95 - Math.sin(tdir) * v * 95, py = y + Math.sin(tdir) * u * 95 + Math.cos(tdir) * v * 95;
+        b.fillStyle = `rgba(255,${220 + r() * 30},${190 + r() * 50},${0.15 + r() * 0.4})`; b.beginPath(); b.arc(px, py, 0.3 + r() * 0.7, 0, 6.283); b.fill(); }
+      bl(x, y, 9, '255,170,110', 0.5);
+      b.fillStyle = '#020205'; b.beginPath(); b.arc(x, y, 3.2, 0, 6.283); b.fill();
+      b.strokeStyle = 'rgba(255,200,150,0.9)'; b.lineWidth = 0.9; b.beginPath(); b.arc(x, y, 3.9, 0, 6.283); b.stroke();
+      label(x + 4, y + 12, o.name, yrs, '255,210,170', [x, y], 20);
+    } else if (o.kind === 'pulsar') {
+      EXOTIC.pulsar = [x, y];
+      label(x + 4, y, o.name + ' · flashes 11× a second (slowed here)', yrs, '180,215,255', [x, y], 16);
+    }
+  });
+
+  // stars: sparse in the sunlit inner system, denser and more colourful with distance
+  const pal = ['232,230,255', '232,230,255', '170,200,255', '255,214,175', '255,180,200'];
+  STARS = [];
+  for (let i = 0; i < 1400; i++) {
+    const x = r() * W, y = r() * H, f = (Math.hypot(x - cx, y - cy) - R0) / (RMAX - R0);
+    if (r() > 0.18 + 0.82 * Math.min(1, Math.max(0, f)) ** 1.6) continue;
+    const far = f > 1;
+    STARS.push({ x, y, s: 0.3 + r() * r() * (far ? 1.8 : 1.3), a: (far ? 0.25 : 0.12) + r() * 0.5,
+      tw: r() * 6.28, rgb: far ? pal[Math.floor(r() * pal.length)] : pal[0] });
+  }
+}
+// [lon, lat, metro population in millions] — the brightest lights on the night side
+const CITIES = [[139.69,35.69,37],[77.21,28.61,32],[121.47,31.23,28],[90.41,23.81,23],[-46.63,-23.55,22],[-99.13,19.43,22],[31.24,30.04,22],[116.41,39.9,21],[72.88,19.08,21],[135.5,34.69,19],[106.55,29.56,17],[67.01,24.86,17],[15.27,-4.44,17],[3.38,6.52,16],[28.98,41.01,16],[-58.38,-34.6,15],[88.36,22.57,15],[120.98,14.6,15],[113.26,23.13,14],[117.36,39.34,14],[74.36,31.52,14],[-43.17,-22.91,14],[77.59,12.97,13],[114.06,22.54,13],[37.62,55.76,12.6],[80.27,13.08,12],[-74.07,4.71,11],[2.35,48.86,11],[106.85,-6.21,11],[-77.04,-12.05,11],[100.5,13.76,11],[78.49,17.39,10.5],[126.98,37.57,10],[136.91,35.18,9.5],[-0.13,51.51,9.5],[104.07,30.57,9.5],[51.39,35.69,9.4],[118.8,32.06,9.4],[106.63,10.82,9],[13.23,-8.84,9],[114.31,30.59,8.6],[108.94,34.34,8.5],[72.57,23.02,8.5],[101.69,3.14,8.4],[-74.01,40.71,18.8],[114.17,22.32,7.6],[120.16,30.27,8],[46.68,24.71,7.5],[44.36,33.31,7.5],[-70.67,-33.45,6.9],[72.83,21.17,7.8],[-3.7,40.42,6.7],[120.58,31.3,7.4],[73.86,18.52,7],[126.53,45.8,6.5],[-95.37,29.76,7],[-96.8,32.78,7.5],[-79.38,43.65,6.4],[39.28,-6.79,7.4],[-80.19,25.76,6.1],[-43.94,-19.92,6.1],[103.82,1.35,6],[-75.17,39.95,6.2],[-84.39,33.75,6.1],[130.4,33.59,5.5],[32.56,15.5,6],[2.17,41.39,5.6],[28.05,-26.2,6],[30.34,59.93,5.5],[120.38,36.07,6],[121.61,38.91,5.5],[-77.04,38.91,5.4],[96.2,16.87,5.6],[29.92,31.2,5.5],[117.12,36.65,6],[-103.35,20.66,5.3],[-118.24,34.05,12.5],[-87.63,41.88,8.9],[-122.42,37.77,4.7],[-122.33,47.61,4],[-112.07,33.45,4.9],[-71.06,42.36,4.9],[-73.57,45.5,4.3],[-123.12,49.28,2.6],[-104.99,39.74,2.9],[-93.27,44.98,3.7],[-100.31,25.69,5.3],[-82.37,23.11,2.1],[-66.9,10.48,3],[-78.47,-0.18,2],[-47.88,-15.79,4.8],[-51.23,-30.03,4.3],[-34.88,-8.05,4.2],[-56.16,-34.9,1.8],[13.4,52.52,3.6],[12.5,41.9,4.3],[9.19,45.46,3.1],[23.73,37.98,3.2],[30.52,50.45,3],[21.01,52.23,1.8],[16.37,48.21,1.9],[4.9,52.37,2.4],[4.35,50.85,2.1],[7,51.45,5],[9.99,53.55,1.8],[11.58,48.14,1.5],[18.07,59.33,1.6],[10.75,59.91,1.1],[12.57,55.68,1.4],[24.94,60.17,1.3],[10.39,63.43,0.3],[-9.14,38.72,2.9],[-2.24,53.48,2.8],[-6.26,53.35,1.4],[19.04,47.5,1.8],[26.1,44.43,1.8],[32.85,39.93,5.5],[34.78,32.09,4],[55.27,25.2,3.5],[47.98,29.37,3],[-7.59,33.57,4],[3.06,36.75,3],[10.18,36.81,2],[-0.19,5.6,2.6],[-4.01,5.36,5.5],[-17.47,14.72,3.3],[38.76,9.03,5],[36.82,-1.29,5],[32.58,0.35,3.6],[18.42,-33.92,4.8],[31.02,-29.86,3.2],[47.52,-18.88,3.6],[151.21,-33.87,5.3],[144.96,-37.81,5.1],[153.03,-27.47,2.5],[115.86,-31.95,2.1],[138.6,-34.93,1.4],[174.76,-36.85,1.7],[121.57,25.03,7],[129.08,35.18,3.4],[141.35,43.06,2.6],[105.85,21.03,5],[104.92,11.56,2.2],[69.18,34.56,4.5],[69.24,41.3,2.6],[76.89,43.24,2],[82.92,55.03,1.6],[60.6,56.84,1.5],[131.89,43.12,0.6],[106.92,47.89,1.6],[79.86,6.93,2.3],[85.32,27.72,1.5],[73.05,33.68,2],[75.79,26.91,4],[80.95,26.85,3.8],[85.14,25.59,2.5],[-149.9,61.22,0.3],[-21.94,64.15,0.2],[-157.86,21.31,1],[-113.49,53.55,1.4],[-114.07,51.05,1.5],[-97.14,49.9,0.8],[-90.07,29.95,1.3],[-115.14,36.17,2.3],[-117.16,32.72,3.3],[-111.89,40.76,1.2],[-94.58,39.1,2.2],[-90.2,38.63,2.8],[-83.05,42.33,4.3],[-81.69,41.5,2],[-80,40.44,2.4],[-80.84,35.23,2.7],[-86.78,36.16,2],[-82.46,27.95,3.2],[-122.68,45.52,2.5]];
+// each city plus a scatter of towns around it, so the lights look like real night-time sprawl
+const LIGHTS = (() => { const r = rng(5), out = [];
+  for (const [lon, lat, pop] of CITIES) {
+    out.push([lon, lat, pop]);
+    const k = Math.ceil(pop * 1.6), spread = 0.6 + Math.sqrt(pop) * 0.55;
+    for (let i = 0; i < k; i++) { const a = r() * 6.283, d = spread * Math.sqrt(r());
+      out.push([lon + d * Math.cos(a) / Math.max(0.3, Math.cos(lat * RAD)), lat + d * Math.sin(a), 0.05 + r() * 0.4]); }
+  }
+  return out; })();
+// cloud cells: storm tracks at mid-latitudes and the tropical band, drifting east
+const CLOUDS = (() => { const r = rng(21), out = [];
+  for (let i = 0; i < 46; i++) {
+    const band = r(), lat = band < 0.35 ? (r() - 0.5) * 16 + 4 : (r() < 0.5 ? 1 : -1) * (40 + r() * 22);
+    const lon = r() * 360 - 180, n = 2 + Math.floor(r() * 4), speed = band < 0.35 ? -0.05 : 0.09 + r() * 0.06;
+    for (let j = 0; j < n * 3; j++) out.push({ lon: lon + (r() - 0.5) * 14, lat: lat + (r() - 0.5) * 4, rad: 0.8 + r() * 2.6, speed, a: 0.07 + r() * 0.11 });
+  }
+  return out; })();
+// coarse biomes, painted over the land as soft patches: [lon, lat, radius°, rgb, alpha]
+const BLOBS = (list, seed) => { const r = rng(seed), out = [];
+  for (const [lon, lat, rad, rgb, a] of list) for (let i = 0; i < 14; i++) {
+    const ang = r() * 6.283, d = rad * 0.65 * Math.sqrt(r());
+    out.push([lon + d * Math.cos(ang) / Math.max(0.35, Math.cos(lat * RAD)), lat + d * Math.sin(ang) * 0.8, rad * (0.3 + 0.35 * r()), rgb, a * 0.22]);
+  }
+  return out; };
+const BIOMES = [
+  [13, 23, 13, '226,205,150', .75], [45, 23, 9, '226,205,150', .7], [133, -25, 10, '222,180,130', .6], [105, 43, 7, '215,200,155', .55],
+  [21, -23, 5, '220,200,150', .5], [-70, -24, 4, '220,200,160', .5], [72, 27, 4, '220,200,150', .4], [-112, 33, 5, '220,190,140', .45],
+  [62, 40, 6, '215,200,155', .45],
+  [-62, -5, 11, '74,140,96', .6], [22, 0, 8, '74,140,96', .55], [114, 0, 7, '74,140,96', .5],
+  [-88, 37, 7, '110,170,110', .3], [10, 49, 8, '120,175,115', .3], [110, 28, 8, '110,170,110', .35],
+];
+const BIOME_BLOBS = BLOBS(BIOMES, 31);
+let LAND = null;
+fetch('https://cdn.jsdelivr.net/npm/world-atlas@2.0.2/land-110m.json').then(r => r.json())
+  .then(topo => { LAND = topojson.feature(topo, topo.objects.land); });
+
+const FONT = (px, w = 400) => `${w} ${px}px 'Space Grotesk',system-ui,sans-serif`;
+const lightTime = d => { const s = d / C_KMS;
+  return s < 60 ? `${s.toFixed(1)} s` : s < 3600 ? `${Math.round(s / 60)} min`
+    : `${Math.floor(s / 3600)} h ${String(Math.floor(s / 60) % 60).padStart(2, '0')} min`; };
+const dot = (x, y, r, col) => { ctx.fillStyle = col; ctx.beginPath(); ctx.arc(x, y, r, 0, 6.283); ctx.fill(); };
+const glow = (x, y, r, rgb, a) => { const g = ctx.createRadialGradient(x, y, 0, x, y, r);
+  g.addColorStop(0, `rgba(${rgb},${a})`); g.addColorStop(1, `rgba(${rgb},0)`);
+  ctx.fillStyle = g; ctx.beginPath(); ctx.arc(x, y, r, 0, 6.283); ctx.fill(); };
+
+function quad(S, T) {                           // leave the planet near the limb, then head out
+  const a1 = Math.atan2(S[1] - cy, S[0] - cx), a2 = Math.atan2(T[1] - cy, T[0] - cx);
+  const da = mod(a2 - a1 + Math.PI, 2 * Math.PI) - Math.PI, am = a1 + da * 0.6, rr = R * 1.3;
+  return [S, [cx + rr * Math.cos(am), cy + rr * Math.sin(am)], T];
+}
+const qAt = ([a, b, c], t) => [0, 1].map(i => (1 - t) ** 2 * a[i] + 2 * (1 - t) * t * b[i] + t * t * c[i]);
+
+// spherical destination point (for the wobbling aurora oval)
+function dest([lon, lat], brg, dist) {
+  const p1 = lat * RAD, l1 = lon * RAD, b = brg * RAD, d = dist * RAD;
+  const p2 = Math.asin(Math.sin(p1) * Math.cos(d) + Math.cos(p1) * Math.sin(d) * Math.cos(b));
+  const l2 = l1 + Math.atan2(Math.sin(b) * Math.sin(d) * Math.cos(p1), Math.cos(d) - Math.sin(p1) * Math.sin(p2));
+  return [l2 / RAD, p2 / RAD];
+}
+
+// travel profile along a path: s = 1 at the spacecraft, 0 at the station.
+// physical: d(t) falls linearly (constant c) over Tphys seconds; screen position is logFrac(d).
+// soft landing: screen speed capped at VMAX path-lengths per second, so the last stretch never just flashes past.
+const TABLES = {}, VMAX = 0.15;
+function travelTable(dT) {
+  const key = Math.round(Math.log10(dT) * 200);
+  if (TABLES[key]) return TABLES[key];
+  const FT = logFrac(dT), N = 300, Tphys = 6 + 40 * FT * FT, span = Math.log10(LIGHT_DAY) - LOG_D0;
+  const dAt = s => 10 ** (LOG_D0 + span * (s * FT) ** (1 / GAMMA)), d0 = dAt(0);
+  const ts = [0], ss = [1];
+  let t = 0;
+  for (let i = 1; i <= N; i++) {
+    const s0 = 1 - (i - 1) / N, s1 = 1 - i / N;
+    t += Math.max((dAt(s0) - dAt(s1)) / (dT - d0) * Tphys, (1 / N) / VMAX);
+    ts.push(t); ss.push(s1);
+  }
+  return (TABLES[key] = { ts, ss, T: t });
+}
+function sAt(tab, tl) {
+  let lo = 0, hi = tab.ts.length - 1;
+  while (hi - lo > 1) { const m = (lo + hi) >> 1; if (tab.ts[m] <= tl) lo = m; else hi = m; }
+  const f = (tl - tab.ts[lo]) / ((tab.ts[hi] - tab.ts[lo]) || 1);
+  return tab.ss[lo] + (tab.ss[hi] - tab.ss[lo]) * f;
+}
+
+// a signal pulse: a short comet travelling along the path; head at u, tail behind it
+function pulse(q, u, dirSign, rgb, a, len = 0.05) {
+  const N = 9;
+  for (let i = 0; i < N; i++) {
+    const t0 = u - dirSign * len * i / N, t1 = u - dirSign * len * (i + 1) / N;
+    if (t0 < 0 || t0 > 1) continue;
+    const p0 = qAt(q, t0), p1 = qAt(q, Math.max(0, Math.min(1, t1)));
+    ctx.strokeStyle = `rgba(${rgb},${a * (1 - i / N) ** 1.5})`; ctx.lineWidth = 2.2 * (1 - i / N) + 0.4;
+    ctx.beginPath(); ctx.moveTo(p0[0], p0[1]); ctx.lineTo(p1[0], p1[1]); ctx.stroke();
+  }
+  const h = qAt(q, u); glow(h[0], h[1], 7, rgb, a * 0.5); dot(h[0], h[1], 1.4, `rgba(255,250,240,${a})`);
+}
+
+// a little deep-space antenna: pedestal, tilted parabolic bowl, feed struts, blinking activity light
+function drawDish(x, y, rot, on, sec) {
+  ctx.save(); ctx.translate(x, y); ctx.rotate(rot); ctx.scale(1.25, 1.25);
+  ctx.lineJoin = 'round';
+  ctx.fillStyle = '#c7ad80'; ctx.beginPath(); ctx.ellipse(0, 0, 4.2, 1.3, 0, 0, 6.283); ctx.fill();         // footing
+  ctx.fillStyle = '#e8d3a6'; ctx.beginPath(); ctx.moveTo(-2.6, 0); ctx.lineTo(2.6, 0); ctx.lineTo(1.2, -4.6); ctx.lineTo(-1.2, -4.6); ctx.closePath(); ctx.fill();
+  ctx.translate(0, -5.4); ctx.rotate(-0.5);
+  ctx.fillStyle = '#d9c39a'; ctx.beginPath(); ctx.ellipse(0, -0.6, 6.4, 4.4, 0, 0, Math.PI); ctx.fill();    // back of the bowl
+  ctx.fillStyle = '#fff3d6'; ctx.beginPath(); ctx.ellipse(0, -0.6, 6.4, 1.7, 0, 0, 6.283); ctx.fill();      // face of the bowl
+  ctx.strokeStyle = 'rgba(160,130,90,0.6)'; ctx.lineWidth = 0.4; ctx.stroke();
+  ctx.strokeStyle = '#efe0c0'; ctx.lineWidth = 0.6;
+  ctx.beginPath(); ctx.moveTo(-5, -0.9); ctx.lineTo(0, -7); ctx.lineTo(5, -0.9); ctx.moveTo(0, -0.6); ctx.lineTo(0, -7); ctx.stroke();  // feed struts
+  ctx.fillStyle = '#fff6e2'; ctx.beginPath(); ctx.arc(0, -7.2, 0.9, 0, 6.283); ctx.fill();                   // subreflector
+  ctx.restore();
+  if (on) { const b = 0.5 + 0.5 * Math.sin(sec * 3); ctx.save(); ctx.translate(x, y); ctx.rotate(rot);
+    glow(3.6, -1.5, 5, '255,170,90', 0.5 * b); dot(3.6, -1.5, 0.9, `rgba(255,200,130,${0.5 + 0.5 * b})`); ctx.restore(); }
+}
+
+// ======================= frame =======================
+function frame() {
+  const t = now(), s = sun(t), sec = (Date.now() - T0) / 1000;
+  const dt = Math.min(0.5, sec - (frame.last ?? sec)); frame.last = sec;
+  for (const [key, L] of LINKS) {                 // links fade in and out over a few seconds
+    L.alpha += (L.want - L.alpha) * Math.min(1, dt * 0.5);
+    if (!L.want && L.alpha < 0.01) LINKS.delete(key);
+  }
+  if (BUILT_LS === null || Math.abs(mod(s.lam - BUILT_LS + 180, 360) - 180) > 0.5) buildBackdrop(s.lam);   // the sky turns slowly over the year
+  const S = sky(t, s);
+  const PARENT = {};
+  const wanted = new Set([...ALWAYS_ORBITING, ...[...LINKS.values()].map(L => L.target)]);
+  for (const k of wanted) {
+    const h = homeOf(k);
+    if (h === 'MOON' || h === 'MARS' || h === 'JUP') { PARENT[k] = h; continue; }
+    if (S[k]) continue;
+    const e = eph(k, t);
+    if (e) S[k] = { kind: 'craft', ...e };
+    else if (h === 'L1') S[k] = { kind: 'craft', lam: s.lam, d: 1.5e6 };
+    else if (h === 'L2') S[k] = { kind: 'craft', lam: s.lam + 180, d: 1.5e6 };
+    else if (h === 'EARTH') S[k] = { kind: 'craft', lam: 360 * hash(k), d: 6e4 + 3e5 * hash(k, 7) };
+    else S[k] = { kind: 'craft', ...helioToGeo(360 * hash(k), 0.6 + 3 * hash(k, 3), s.lam) };   // somewhere in the solar system
+  }
+  for (const L of LINKS.values()) if (L.rtlt > 0 && S[L.target]) S[L.target].d = L.rtlt / 2 * C_KMS;   // the feed's own light-time, when it has one
+  const free = Object.fromEntries(Object.entries(S));
+  const TH = spreadAngles(free, s.lam);
+  const pos = {};
+  for (const [k, v] of Object.entries(S)) pos[k] = skyPos(TH[k], v.d);
+  // craft that live at a body circle it
+  const kids = {};
+  for (const [k, par] of Object.entries(PARENT)) {
+    const i = (kids[par] = (kids[par] || 0) + 1) - 1, P = pos[par];
+    if (!P) continue;
+    const w = 0.5 + 0.2 * i, ph = sec * w + i * 2.4, rr = 13 + 6 * i;
+    pos[k] = [P[0] + rr * Math.cos(ph), P[1] + rr * 0.45 * Math.sin(ph)];
+    S[k] = { kind: 'craft', d: S[par].d, lam: S[par].lam, parent: par };
+  }
+  const sunAng = TH.SUN;
+  const p = makeProjection(s, sunAng), path = d3.geoPath(p, ctx);
+  ctx.setTransform(DPR, 0, 0, DPR, 0, 0);
+
+  // ---- deep space: backdrop, sunlight, stars
+  ctx.setTransform(1, 0, 0, 1, 0, 0); ctx.drawImage(BACKDROP, 0, 0); ctx.setTransform(DPR, 0, 0, DPR, 0, 0);
+  let g;
+  const SP = pos.SUN;
+  glow(SP[0], SP[1], Math.max(W, H) * 0.45, '255,190,130', 0.08);
+  for (const st of STARS) {
+    ctx.globalAlpha = st.a * (0.7 + 0.3 * Math.sin(sec * 0.6 + st.tw * 3));
+    dot(st.x, st.y, st.s, `rgb(${st.rgb})`);
+  }
+  ctx.globalAlpha = 1;
+
+  // ---- distance as dust: slow drifting motes at 1 light-second / minute / hour / day
+  for (const [ri, ring] of RINGS.entries()) {
+    // full circle (so no sector edges), patchy like drifting clouds, wider spread farther out
+    const rr = rOf(ring.d), n = Math.round(rr * 6.283 * 0.22), drift = sec * 0.006 * (1.2 - logFrac(ring.d));
+    const spread = 3 + rr * 0.03;
+    for (let k = 0; k < n; k++) {
+      const a0 = 6.283 * (k + 0.5 * Math.sin(k * 12.9898)) / n;
+      const patch = 0.5 + 0.5 * Math.sin(3 * a0 + ri * 1.9) * Math.sin(5 * a0 - ri + 0.05 * sec);
+      if (mod(Math.sin(k * 78.233) * 43758.5453, 1) > 0.15 + 0.85 * patch) continue;
+      const a = a0 + drift * (k % 2 ? 1 : -0.6);
+      const jr = rr + spread * (Math.sin(k * 7.13 + sec * 0.15) * 0.7 + Math.sin(k * 3.7) * 0.5);
+      const x = cx + jr * Math.cos(a), y = cy - jr * Math.sin(a);
+      if (x < 0 || x > W || y < 0 || y > H || (x < 400 && y < 100)) continue;   // keep the header clear
+      ctx.fillStyle = `rgba(${ring.rgb},${0.22 + 0.3 * Math.sin(sec * 0.8 + k * 1.7) ** 2})`;
+      ctx.beginPath(); ctx.arc(x, y, 0.7 + (k % 3) * 0.4, 0, 6.283); ctx.fill();
+    }
+  }
+
+  // ---- heliopause: a wavering violet veil
+  {
+    const rH = EXOTIC.rHP, n = Math.round(rH * 0.5);
+    ctx.lineWidth = 26; ctx.strokeStyle = 'rgba(160,110,255,0.035)';
+    ctx.beginPath(); ctx.arc(cx, cy, rH, 0, 6.283); ctx.stroke();
+    for (let k = 0; k < n * 3.4; k++) {
+      const a = 6.283 * k / (n * 3.4);
+      const jr = rH + 7 * Math.sin(3 * a + 0.2 * sec) + 4 * Math.sin(13 * a - 0.37 * sec) + 9 * Math.sin(k * 91.7);
+      const x = cx + jr * Math.cos(a), y = cy - jr * Math.sin(a);
+      if (x < 0 || x > W || y < 0 || y > H) continue;
+      ctx.fillStyle = `rgba(${k % 3 ? '175,120,255' : '255,130,210'},${0.1 + 0.18 * Math.sin(5 * a + 0.5 * sec + k) ** 2})`;
+      ctx.beginPath(); ctx.arc(x, y, 0.7, 0, 6.283); ctx.fill();
+    }
+  }
+
+  // ---- the exotic: a pulsar ticking, and now and then a supernova somewhere in the galaxy
+  if (EXOTIC.pulsar) {
+    const [x, y] = EXOTIC.pulsar, P = 0.089 * 12, fl = Math.exp(-mod(sec, P) / 0.07), ba = sec * 0.35;
+    ctx.lineWidth = 0.8; ctx.strokeStyle = `rgba(170,210,255,${0.08 + 0.35 * fl})`;
+    ctx.beginPath(); ctx.moveTo(x - 30 * Math.cos(ba), y - 30 * Math.sin(ba)); ctx.lineTo(x + 30 * Math.cos(ba), y + 30 * Math.sin(ba)); ctx.stroke();
+    glow(x, y, 10, '180,215,255', 0.15 + 0.6 * fl); dot(x, y, 1.2, `rgba(235,245,255,${0.5 + 0.5 * fl})`);
+  }
+  {
+    const PER = 75, FIRST = params.has('nova') ? -2 : 20, tau = mod(sec - FIRST, PER), ev = Math.floor((sec - FIRST) / PER);
+    if (sec > FIRST && tau < 11) {
+      const rr = rng(1000 + ev); rr();
+      const rr0 = rOf(100 * LY), rr1 = Math.min(rOf(5e4 * LY), Math.hypot(W, H));
+      const th = -20 + rr() * 70, rad = rr0 + rr() * (rr1 - rr0), [x, y] = polar(th, rad);
+      if (x > 20 && x < W - 20 && y > 20 && y < H - 20) {
+        const bri = tau < 0.5 ? tau / 0.5 : Math.exp(-(tau - 0.5) / 2.4);
+        glow(x, y, 8 + 34 * bri, `255,${200 - 60 * Math.min(1, tau / 6)},${170 - 70 * Math.min(1, tau / 6)}`, 0.55 * bri);
+        dot(x, y, 1.5 + 1.5 * bri, `rgba(255,250,240,${bri})`);
+        ctx.strokeStyle = `rgba(255,170,150,${0.22 * (1 - tau / 11)})`; ctx.lineWidth = 0.8; ctx.setLineDash([1, 4]);
+        ctx.beginPath(); ctx.arc(x, y, 4 + tau * 6, 0, 6.283); ctx.stroke(); ctx.setLineDash([]);
+      }
+    }
+  }
+
+  // ---- earth
+  glow(cx, cy, R * 1.18, '120,170,255', 0.0);
+  g = ctx.createRadialGradient(cx, cy, R * 0.96, cx, cy, R * 1.17);
+  g.addColorStop(0, 'rgba(120,170,255,0.38)'); g.addColorStop(1, 'rgba(120,170,255,0)');
+  ctx.fillStyle = g; ctx.beginPath(); ctx.arc(cx, cy, R * 1.17, 0, 6.283); ctx.fill();
+  ctx.save(); ctx.beginPath(); path({ type: 'Sphere' }); ctx.clip();
+  ctx.fillStyle = '#2b5c8c'; ctx.fillRect(cx - R, cy - R, 2 * R, 2 * R);
+  // sea ice (November: Arctic growing, Antarctic still wide)
+  ctx.beginPath(); path(d3.geoCircle().center([0, 90]).radius(17)()); ctx.fillStyle = 'rgba(225,238,248,0.55)'; ctx.fill();
+  ctx.beginPath(); path(d3.geoCircle().center([0, -90]).radius(28)()); ctx.fillStyle = 'rgba(225,238,248,0.4)'; ctx.fill();
+  if (LAND) {
+    ctx.beginPath(); path(LAND); ctx.lineWidth = 3.5; ctx.strokeStyle = 'rgba(110,175,210,0.45)'; ctx.stroke();   // shallows
+    ctx.fillStyle = '#86bf9c'; ctx.fill();
+    ctx.save(); ctx.beginPath(); path(LAND); ctx.clip();
+    // boreal forest and tundra bands
+    for (const [rad, rgb, a] of [[40, '80,140,105', .12], [37, '80,140,105', .14], [34, '80,140,105', .16], [31, '80,140,105', .14],
+                                 [27, '175,190,170', .2], [24, '175,190,170', .25], [21, '190,200,185', .3]]) {
+      ctx.beginPath(); path(d3.geoCircle().center([0, 90]).radius(rad)()); ctx.fillStyle = `rgba(${rgb},${a})`; ctx.fill();
+    }
+    for (const [lon, lat, rad, rgb, a] of BIOME_BLOBS) {
+      ctx.beginPath(); path(d3.geoCircle().center([lon, lat]).radius(rad)()); ctx.fillStyle = `rgba(${rgb},${a})`; ctx.fill();
+    }
+    // ice sheets
+    ctx.beginPath(); path(d3.geoCircle().center([0, -90]).radius(27)()); ctx.fillStyle = '#eef3f6'; ctx.fill();
+    ctx.beginPath(); path(d3.geoCircle().center([-41, 72.5]).radius(10.5)()); ctx.fillStyle = 'rgba(238,243,246,0.95)'; ctx.fill();
+    ctx.restore();
+  }
+  // clouds drifting with the weather
+  for (const c of CLOUDS) {
+    ctx.beginPath(); path(d3.geoCircle().center([c.lon + sec * c.speed, c.lat]).radius(c.rad)());
+    ctx.fillStyle = `rgba(255,255,255,${c.a})`; ctx.fill();
+  }
+  const sa = sunAng * RAD;
+  if (d3.geoDistance(p.center_, [s.lon, s.lat]) < Math.PI / 2) {                 // sun glint on the ocean
+    const gp = p([s.lon, s.lat]); glow(gp[0], gp[1], R * 0.16, '255,250,235', 0.22);
+  }
+  glow(cx + 0.5 * R * Math.cos(sa), cy - 0.5 * R * Math.sin(sa), R * 1.1, '255,238,210', 0.16);
+  const anti = [s.lon + 180, -s.lat];
+  for (const [rad, a] of [[96, .12], [93, .18], [90, .25], [86, .25], [80, .25], [70, .2]]) {
+    ctx.beginPath(); path(d3.geoCircle().center(anti).radius(rad)()); ctx.fillStyle = `rgba(9,12,40,${a})`; ctx.fill();
+  }
+  // city lights on the night side, fading in through twilight
+  for (const [i, [lon, lat, pop]] of LIGHTS.entries()) {
+    if (d3.geoDistance(p.center_, [lon, lat]) > Math.PI / 2 - 0.02) continue;
+    const night = Math.max(0, Math.min(1, (d3.geoDistance([s.lon, s.lat], [lon, lat]) / RAD - 92) / 10));
+    if (!night) continue;
+    const [x, y] = p([lon, lat]), tw = 0.85 + 0.15 * Math.sin(sec * 1.3 + i * 2.1);
+    const big = Math.sqrt(pop);
+    if (pop > 1) glow(x, y, 2 + big * 1.6, '255,190,110', 0.28 * night);
+    dot(x, y, 0.35 + big * 0.28, `rgba(255,${215 + Math.min(30, pop * 3)},${150 + Math.min(60, pop * 5)},${(0.45 + 0.5 * Math.min(1, pop / 6)) * night * tw})`);
+  }
+
+  // aurora: NOAA's live oval when we have it (model otherwise), wobbling, with brightness waves running along it
+  ctx.save(); ctx.beginPath(); path(d3.geoCircle().center(anti).radius(99)()); ctx.clip();
+  ctx.lineCap = 'round';
+  for (const [pi, pole] of [GEOMAG_N, GEOMAG_S].entries()) {
+    const N = 120, pts = [];
+    for (let i = 0; i <= N; i++) {
+      const b = i / N * 360, br = b * RAD;
+      const live = AURORA && AURORA[pi ? 'S' : 'N'], base = live && live.r[i % N] != null ? live.r[i % N] : 20.5;
+      const rr = base + (live ? 0.6 : 1.1) * Math.sin(3 * br + 0.13 * sec + pi) + 0.5 * Math.sin(7 * br - 0.31 * sec);
+      pts.push({ ll: dest(pole, b, rr), hi: dest(pole, b, rr - 2.2 - 0.8 * Math.sin(5 * br + 0.4 * sec)), b: br });
+    }
+    for (let i = 0; i < N; i += 2) {
+      const br = pts[i].b;
+      const live = AURORA && AURORA[pi ? 'S' : 'N'], strength = live ? 0.15 + live.v[i] : 1;
+      const wave = strength * (0.25 + 0.75 * Math.max(0, Math.sin(4 * br - 0.45 * sec + pi)) ** 2 * (0.7 + 0.3 * Math.sin(11 * br + 1.3 * sec)));
+      const seg = { type: 'LineString', coordinates: [pts[i].ll, pts[i + 1].ll, pts[i + 2].ll] };
+      const top = { type: 'LineString', coordinates: [pts[i].hi, pts[i + 1].hi, pts[i + 2].hi] };
+      for (const [w, a] of [[R * .09, .06], [R * .04, .16], [R * .014, .38]]) {
+        ctx.beginPath(); path(seg); ctx.lineWidth = w; ctx.strokeStyle = `rgba(120,255,180,${a * wave})`; ctx.stroke();
+      }
+      ctx.beginPath(); path(top); ctx.lineWidth = R * .05; ctx.strokeStyle = `rgba(175,125,255,${.12 * wave})`; ctx.stroke();
+    }
+  }
+  ctx.restore();
+  ctx.restore();
+  ctx.beginPath(); ctx.arc(cx, cy, R, 0, 6.283); ctx.lineWidth = 1; ctx.strokeStyle = 'rgba(170,200,255,0.3)'; ctx.stroke();
+
+  // ---- stations: little dishes on the near side; far-side stations emit from the limb
+  const active = d => d.signals.length > 0;
+  const stPos = {};
+  for (const [name, ll] of Object.entries(STATIONS)) {
+    const dd = d3.geoDistance(p.center_, ll), hidden = dd > Math.PI / 2 - 0.01;
+    const pt = p(hidden ? d3.geoInterpolate(p.center_, ll)((Math.PI / 2 - 0.005) / dd) : ll);
+    const nOn = DISHES.filter(d => d.station === name && active(d) && !NOT_CRAFT.has(d.target)).length;
+    stPos[name] = { pt, hidden };
+    const ux = pt[0] - cx, uy = pt[1] - cy, ul = Math.hypot(ux, uy) || 1, nx = ux / ul, ny = uy / ul;
+    if (!hidden) {
+      glow(pt[0], pt[1], 16, '255,210,122', 0.14 + 0.05 * nOn);
+      drawDish(pt[0], pt[1], Math.atan2(ny, nx) + Math.PI / 2, nOn > 0, sec);
+      ctx.font = FONT(10); ctx.fillStyle = 'rgba(255,225,170,0.7)';
+      ctx.textAlign = nx < 0 ? 'right' : 'left';
+      ctx.fillText(name.toLowerCase(), pt[0] + (nx < 0 ? -10 : 10) + nx * 6, pt[1] + 14 + ny * 6);
+    } else {
+      ctx.font = FONT(10); ctx.fillStyle = 'rgba(255,225,170,0.35)';
+      const txt = name.toLowerCase() + ' · far side', tw = ctx.measureText(txt).width;
+      let lx = nx < 0 ? pt[0] + nx * 14 - tw : pt[0] + nx * 14;
+      lx = Math.max(10, Math.min(W - tw - 10, lx));
+      ctx.textAlign = 'left';
+      ctx.fillText(txt, lx, pt[1] + ny * 14 + (Math.abs(nx) > 0.9 ? 16 : 4));
+    }
+    ctx.textAlign = 'left';
+  }
+
+  // ---- signals: hairline paths, pulses carry the motion. faded where they cross the disc
+  for (const pass of ['disc', 'space']) {
+    ctx.save(); ctx.beginPath();
+    if (pass === 'disc') ctx.arc(cx, cy, R, 0, 6.283); else { ctx.rect(0, 0, W, H); ctx.arc(cx, cy, R, 0, 6.283, true); }
+    ctx.clip(); ctx.globalAlpha = pass === 'disc' ? 0.3 : 1; ctx.lineCap = 'round';
+    for (const d of LINKS.values()) {
+      if (!pos[d.target] || !stPos[d.station]) continue;
+      const q = quad(stPos[d.station].pt, pos[d.target]);
+      const A = d.alpha;
+      const downs = d.signals.filter(x => x.dir === 'down'), ups = d.signals.filter(x => x.dir === 'up');
+      const pw = downs.length ? Math.max(...downs.map(x => x.power)) : -150;
+      const strength = Math.max(0.25, Math.min(0.95, (pw + 180) / 70));
+      ctx.lineWidth = 0.7; ctx.strokeStyle = `rgba(200,205,255,${0.07 * A})`;
+      ctx.beginPath(); ctx.moveTo(...q[0]); ctx.quadraticCurveTo(...q[1], ...q[2]); ctx.stroke();
+      // light at constant c, drawn on the log scale, in compressed time (with a soft landing)
+      const tab = travelTable(S[d.target].d);
+      const rate = Math.max(1, ...downs.map(x => x.rate));
+      const n = Math.max(1, Math.round(Math.log10(rate) / 2));
+      const streak = (tl) => 0.01 + Math.min(0.09, 0.4 * (sAt(tab, tl) - sAt(tab, Math.min(tab.T, tl + 0.15))) / 0.15);
+      for (let i = 0; i < n; i++) {
+        if (downs.length) {                       // spacecraft -> Earth: crawls far out, glides in
+          const tl = mod(sec + i * tab.T / n + d.dish.length * 1.7, tab.T);
+          const fl = d.target === 'VGR1' ? 0.35 + 0.65 * Math.abs(Math.sin(sec * 2.3 + i)) : 1;
+          pulse(q, sAt(tab, tl), -1, '255,190,120', strength * fl * A, streak(tl));
+        }
+        if (ups.length && i === 0) {              // Earth -> spacecraft: the same journey, reversed
+          const tl = mod(sec * 0.9 + tab.T * 0.5, tab.T);
+          pulse(q, sAt(tab, tab.T - tl), 1, '130,225,255', 0.7 * A, streak(tab.T - tl) * 0.8);
+        }
+      }
+    }
+    ctx.restore();
+  }
+  ctx.globalAlpha = 1;
+
+  // ---- sky objects
+  const linked = new Set([...LINKS.values()].filter(L => L.want).map(L => L.target));
+  const labels = [];
+  for (const [k, v] of Object.entries(S)) {
+    const [x, y] = pos[k];
+    if (v.kind === 'sun') {
+      glow(x, y, 60, '255,200,140', 0.25); glow(x, y, 22, '255,220,170', 0.5); dot(x, y, 7, '#ffe9c4');
+      labels.push({ x, y, r: 10, name: 'sun', sub: lightTime(v.d), main: true });
+    } else if (v.kind === 'moon') {
+      const r = 5.5, sx = pos.SUN[0] - x, sy = pos.SUN[1] - y, sl = Math.hypot(sx, sy);
+      const k = (1 - Math.cos((v.lam - s.lam) * RAD)) / 2;            // illuminated fraction
+      dot(x, y, r, '#3a3d5c');
+      ctx.save(); ctx.beginPath(); ctx.arc(x, y, r, 0, 6.283); ctx.clip();
+      dot(x + sx / sl * 2 * r * (1 - k), y + sy / sl * 2 * r * (1 - k), r, '#e9e4d2'); ctx.restore();
+      labels.push({ x, y, r: 8, name: 'moon', sub: lightTime(v.d), main: true });
+    } else if (v.kind === 'planet') {
+      glow(x, y, v.r * 4, '255,230,200', 0.12);
+      if (v.ring) { ctx.strokeStyle = 'rgba(230,210,160,0.7)'; ctx.lineWidth = 1;
+        ctx.beginPath(); ctx.ellipse(x, y, v.r * 2.1, v.r * 0.7, -0.35, 0, 6.283); ctx.stroke(); }
+      dot(x, y, v.r, v.col);
+      labels.push({ x, y, r: v.r + 3, name: v.label, sub: lightTime(v.d), main: true });
+    } else {
+      const on = linked.has(k);
+      if (on) glow(x, y, 9, '255,214,170', 0.3);
+      dot(x, y, on ? 2.2 : 1.6, on ? '#f6efe4' : 'rgba(170,175,215,0.5)');
+      if (!v.parent) labels.push({ x, y, r: 5, name: nameOf(k), sub: on ? lightTime(v.d) : '', on });
+    }
+  }
+  // attach orbiting craft names under their body
+  for (const L of labels) {
+    const key = { moon: 'MOON', mars: 'MARS' }[L.name];
+    if (key) { const ks = Object.keys(PARENT).filter(c => PARENT[c] === key);
+      L.kids = ks.map(c => (linked.has(c) ? '● ' : '○ ') + nameOf(c)).join('  '); }
+  }
+  // label placement with simple collision avoidance
+  const boxes = [];
+  const HOVER = [];
+  for (const L of labels) if (L.main) { HOVER.push({ x: L.x, y: L.y, r: L.r + 8, name: L.name }); L.name = L.sub; L.sub = ''; }   // natural bodies: light-time only, name on hover
+  for (const L of labels.sort((a, b) => a.y - b.y)) {
+    const left = L.x > W - 200, tx = left ? L.x - L.r - 6 : L.x + L.r + 6;
+    let ly = L.y;
+    const hgt = (L.kids ? 13 : 0) + (L.sub ? 28 : 16);
+    while (boxes.some(b => ly < b.y + b.h && ly + hgt > b.y && Math.abs(b.x - tx) < 120)) ly += 4;
+    boxes.push({ x: tx, y: ly, h: hgt });
+    ctx.textAlign = left ? 'right' : 'left';
+    ctx.font = FONT(11, L.main ? 500 : 400);
+    ctx.fillStyle = L.main ? 'rgba(240,226,200,0.6)' : L.on ? 'rgba(225,226,245,0.8)' : 'rgba(170,175,215,0.42)';
+    ctx.fillText(L.name, tx, ly + 2);
+    ctx.font = FONT(10); ctx.fillStyle = 'rgba(140,145,190,0.55)';
+    if (L.sub) ctx.fillText(L.sub, tx, ly + 15);
+    if (L.kids) ctx.fillText(L.kids, tx, ly + (L.sub ? 28 : 15));
+  }
+  ctx.textAlign = 'left';
+
+  // ---- quiet header
+  const open = DISHES.filter(d => active(d) && !NOT_CRAFT.has(d.target)).length, idle = DISHES.filter(d => !active(d) && d.target && !NOT_CRAFT.has(d.target)).length;
+  ctx.font = FONT(12, 500); ctx.fillStyle = 'rgba(160,165,215,0.75)';
+  ctx.fillText('c o z y s p a c e', 32, 40);
+  const live = FEED.live && Date.now() - FEED.at < 60000;   // a small breathing dot while the feed is live
+  dot(166, 36, 2.2, live ? `rgba(120,240,170,${0.45 + 0.4 * Math.sin(sec * 1.5) ** 2})` : 'rgba(160,160,190,0.35)');
+  ctx.font = FONT(12); ctx.fillStyle = 'rgba(140,145,190,0.6)';
+  ctx.fillText(`${open} conversations open · ${idle} dishes waiting`, 32, 60);
+  const v = DISHES.find(d => (d.target === 'VGR1' || d.target === 'VGR2') && active(d));
+  if (v) { const dn = v.signals.find(x => x.dir === 'down');
+    ctx.fillText(`${v.station.toLowerCase()} is ${dn ? 'listening to' : 'calling'} ${nameOf(v.target).toLowerCase()}${dn ? ` · ${dn.rate} bit/s` : ''}`, 32, 78); }
+
+  // ---- hover: names for the natural world
+  if (MOUSE.on) {
+    const all = HOVER.concat(EXOTIC.hover);
+    let hit = null, best = 1e9;
+    for (const h of all) { const dd = Math.hypot(h.x - MOUSE.x, h.y - MOUSE.y); if (dd < h.r && dd < best) { best = dd; hit = h; } }
+    let name = hit && hit.name;
+    if (!name) {
+      const dist = Math.hypot(MOUSE.x - cx, MOUSE.y - cy);
+      if (Math.abs(dist - EXOTIC.rHP) < 16) name = 'heliopause · where the sun\'s wind ends';
+      else if (dist > EXOTIC.oort[0] && dist < EXOTIC.oort[1]) name = 'oort cloud';
+      else if (dist > EXOTIC.rC) name = 'the oldest light · cosmic microwave background';
+    }
+    if (name) {
+      ctx.font = FONT(11, 500);
+      const tw = ctx.measureText(name).width, px = Math.min(W - tw - 24, MOUSE.x + 14), py = Math.max(24, MOUSE.y - 14);
+      if (hit) { ctx.strokeStyle = 'rgba(230,225,255,0.35)'; ctx.lineWidth = 0.8; ctx.beginPath(); ctx.arc(hit.x, hit.y, 9, 0, 6.283); ctx.stroke(); }
+      ctx.fillStyle = 'rgba(10,12,32,0.75)'; ctx.beginPath(); ctx.roundRect(px - 8, py - 14, tw + 16, 22, 11); ctx.fill();
+      ctx.fillStyle = 'rgba(235,232,250,0.9)'; ctx.fillText(name, px, py + 1);
+    }
+  }
+
+  setTimeout(() => requestAnimationFrame(frame), 1000 / 30);
+}
+const MOUSE = { x: 0, y: 0, on: false };
+addEventListener('mousemove', e => { MOUSE.x = e.clientX; MOUSE.y = e.clientY; MOUSE.on = true; });
+document.addEventListener('mouseleave', () => { MOUSE.on = false; });
+addEventListener('resize', resize); resize();
+frame();
+</script>
+</body>
+</html>
