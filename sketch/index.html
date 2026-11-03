@@ -563,6 +563,11 @@ const FONT = (px, w = 400) => `${w} ${px}px 'Space Grotesk',system-ui,sans-serif
 const lightTime = d => { const s = d / C_KMS;
   return s < 60 ? `${s.toFixed(1)} s` : s < 3600 ? `${Math.round(s / 60)} min`
     : `${Math.floor(s / 3600)} h ${String(Math.floor(s / 60) % 60).padStart(2, '0')} min`; };
+function roundedRect(x, y, w, h, r) {
+  r = Math.min(r, w / 2, h / 2);
+  ctx.beginPath(); ctx.moveTo(x + r, y); ctx.arcTo(x + w, y, x + w, y + h, r); ctx.arcTo(x + w, y + h, x, y + h, r);
+  ctx.arcTo(x, y + h, x, y, r); ctx.arcTo(x, y, x + w, y, r); ctx.closePath();
+}
 const dot = (x, y, r, col) => { ctx.fillStyle = col; ctx.beginPath(); ctx.arc(x, y, r, 0, 6.283); ctx.fill(); };
 const SPRITES = new Map();
 function sprite(rgb) {
@@ -1022,7 +1027,7 @@ function drawArecibo(sec) {
   if (px + pw > W - 20) px = ax - 26 - pw;
   py = Math.max(60, Math.min(H - ph - 40, py));
   ctx.save(); ctx.globalAlpha = A;
-  ctx.fillStyle = 'rgba(8,10,28,0.72)'; ctx.beginPath(); ctx.roundRect(px - 10, py - 26, pw + 20, ph + 44, 10); ctx.fill();
+  ctx.fillStyle = 'rgba(8,10,28,0.72)'; roundedRect(px - 10, py - 26, pw + 20, ph + 56, 10); ctx.fill();
   ctx.font = FONT(9); ctx.fillStyle = 'rgba(255,215,160,0.75)'; ctx.textAlign = 'center';
   ctx.fillText(`arecibo · 16 nov 1974 · ${n} / 1679 bits`, px + pw / 2, py - 10);
   for (let i = 0; i < n; i++) {
@@ -1030,6 +1035,8 @@ function drawArecibo(sec) {
     if (ARECIBO_BITS[i] === '1') { ctx.fillStyle = fresh ? 'rgba(255,245,220,1)' : 'rgba(255,205,140,0.9)'; ctx.fillRect(x, y, cs - 0.6, cs - 0.6); }
     else { ctx.fillStyle = 'rgba(255,205,140,0.07)'; ctx.fillRect(x, y, cs - 0.6, cs - 0.6); }
   }
+  ctx.font = FONT(8); ctx.fillStyle = 'rgba(200,190,170,0.5)';
+  ctx.fillText('the real bits · tones generated, one pitch per value', px + pw / 2, py + ph + 18);
   if (n < ARECIBO_BITS.length) { const x = px + (n % 23) * cs, y = py + Math.floor(n / 23) * cs;   // the bit being sent now
     glow(x + cs / 2, y + cs / 2, 6, '255,230,180', 0.8); }
   ctx.textAlign = 'left'; ctx.restore();
@@ -1128,6 +1135,14 @@ function hoverSound(key, x, y, sec) {        // on entering an object: its next 
 // ======================= frame =======================
 function frame() {
   if (document.hidden) { setTimeout(frame, 1000); return; }      // asleep while nobody can see it
+  try { render(); }
+  catch (e) {                                   // one bad frame must never stop the animation
+    if (!frame.warned) { console.error('cozyspace frame error:', e); frame.warned = true; }
+    ctx = MAIN; ctx.setTransform(1, 0, 0, 1, 0, 0); ctx.globalAlpha = 1; ctx.globalCompositeOperation = 'source-over'; ctx.setLineDash([]);
+  }
+  setTimeout(() => requestAnimationFrame(frame), 1000 / FPS);
+}
+function render() {
   const t = now(), s = sun(t), sec = (Date.now() - T0) / 1000;
   const dt = Math.min(0.5, sec - (frame.last ?? sec)); frame.last = sec;
   for (const [key, L] of LINKS) {                 // links fade in and out over a few seconds
@@ -1617,12 +1632,11 @@ function frame() {
       ctx.font = FONT(11, 500);
       const tw = ctx.measureText(name).width, px = Math.min(W - tw - 24, MOUSE.x + 14), py = Math.max(24, MOUSE.y - 14);
       if (hit) { ctx.strokeStyle = 'rgba(230,225,255,0.35)'; ctx.lineWidth = 0.8; ctx.beginPath(); ctx.arc(hit.x, hit.y, 9, 0, 6.283); ctx.stroke(); }
-      ctx.fillStyle = 'rgba(10,12,32,0.75)'; ctx.beginPath(); ctx.roundRect(px - 8, py - 14, tw + 16, 22, 11); ctx.fill();
+      ctx.fillStyle = 'rgba(10,12,32,0.75)'; roundedRect(px - 8, py - 14, tw + 16, 22, 11); ctx.fill();
       ctx.fillStyle = 'rgba(235,232,250,0.9)'; ctx.fillText(name, px, py + 1);
     }
   }
 
-  setTimeout(() => requestAnimationFrame(frame), 1000 / FPS);
 }
 const MOUSE = { x: 0, y: 0, on: false };
 addEventListener('mousemove', e => { MOUSE.x = e.clientX; MOUSE.y = e.clientY; MOUSE.on = true; });
