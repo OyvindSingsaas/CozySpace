@@ -80,16 +80,25 @@ pollAurora();
 // ======================= live DSN feed =======================
 let DISHES = SNAP, FRIENDLY = {}, FEED = { live: false, at: null };
 const LINKS = new Map();                       // 'dish|target' -> link, eased in and out as the feed changes
-function ingest(list) {
+const RIPPLES = [];                            // short-lived rings where something just happened
+function ingest(list, quiet = false) {
   DISHES = list;
+  const before = new Set([...LINKS].filter(([, L]) => L.want).map(([k]) => k));
   for (const L of LINKS.values()) L.want = 0;
   for (const d of list) {
     if (!d.signals.length || !d.target || NOT_CRAFT.has(d.target)) continue;
     const key = d.dish + '|' + d.target, L = LINKS.get(key) || { alpha: 0 };
     LINKS.set(key, Object.assign(L, d, { want: 1 }));
   }
+  if (quiet) return;
+  const t0 = (Date.now() - T0) / 1000;
+  for (const [k, L] of LINKS) {
+    if (L.want && !before.has(k)) RIPPLES.push({ kind: 'start', station: L.station, target: L.target, t0 });
+    if (!L.want && before.has(k)) RIPPLES.push({ kind: 'end', station: L.station, target: L.target, t0 });
+  }
 }
-ingest(SNAP);
+ingest(SNAP, true);
+let LIVE_FETCHES = 0;
 async function pollDSN() {
   if (document.hidden) { setTimeout(pollDSN, 5000); return; }
   try {
@@ -108,7 +117,7 @@ async function pollDSN() {
                     rtlt: t ? +t.getAttribute('rtlt') : -1, signals });
       }
     }
-    if (list.length) { ingest(list); FEED = { live: true, at: Date.now() }; }
+    if (list.length) { ingest(list, LIVE_FETCHES++ === 0); FEED = { live: true, at: Date.now() }; }   // the first live read only sets the scene
   } catch (e) { FEED.live = false; }
   setTimeout(pollDSN, 30000);
 }
@@ -516,16 +525,25 @@ function sAt(tab, tl) {
 }
 
 // a signal pulse: a short comet travelling along the path; head at u, tail behind it
-function pulse(q, u, dirSign, rgb, a, len = 0.05) {
-  const N = 9;
-  for (let i = 0; i < N; i++) {
-    const t0 = u - dirSign * len * i / N, t1 = u - dirSign * len * (i + 1) / N;
-    if (t0 < 0 || t0 > 1) continue;
-    const p0 = qAt(q, t0), p1 = qAt(q, Math.max(0, Math.min(1, t1)));
-    ctx.strokeStyle = `rgba(${rgb},${a * (1 - i / N) ** 1.5})`; ctx.lineWidth = 2.2 * (1 - i / N) + 0.4;
-    ctx.beginPath(); ctx.moveTo(p0[0], p0[1]); ctx.lineTo(p1[0], p1[1]); ctx.stroke();
+// a signal as a wave packet: a carrier wave under a Gaussian envelope, travelling along the path.
+// faster packets stretch a little (speed = how far along the path it moves per second)
+const qLen = q => { let L = 0, a = q[0]; for (let i = 1; i <= 8; i++) { const b = qAt(q, i / 8); L += Math.hypot(b[0] - a[0], b[1] - a[1]); a = b; } return L; };
+function pulse(q, u, dirSign, rgb, a, speed, sec) {
+  if (a < 0.01) return;
+  const L = qLen(q) || 1, half = (9 + Math.min(14, speed * 140)) / L;      // half-length, in path units
+  const N = 34, cycles = 3.5, amp = 2.2 + 1.4 * Math.min(1, a);
+  let prev = null;
+  ctx.lineWidth = 1.1; ctx.lineCap = 'round';
+  for (let i = 0; i <= N; i++) {
+    const f = i / N * 2 - 1, t = u + f * half;
+    if (t < 0 || t > 1) { prev = null; continue; }
+    const p0 = qAt(q, t), p1 = qAt(q, Math.min(1, t + 0.003)), dx = p1[0] - p0[0], dy = p1[1] - p0[1], dl = Math.hypot(dx, dy) || 1;
+    const env = Math.exp(-f * f * 3.2), off = amp * env * Math.sin(f * cycles * 2 * Math.PI + dirSign * sec * 9);
+    const pt = [p0[0] - dy / dl * off, p0[1] + dx / dl * off];
+    if (prev) { ctx.strokeStyle = `rgba(${rgb},${a * env})`; ctx.beginPath(); ctx.moveTo(prev[0], prev[1]); ctx.lineTo(pt[0], pt[1]); ctx.stroke(); }
+    prev = pt;
   }
-  const h = qAt(q, u); glow(h[0], h[1], 7, rgb, a * 0.5); dot(h[0], h[1], 1.4, `rgba(255,250,240,${a})`);
+  const h = qAt(q, u); glow(h[0], h[1], 9, rgb, a * 0.35);
 }
 
 // a little deep-space antenna: pedestal, tilted parabolic bowl, feed struts, blinking activity light
@@ -768,17 +786,38 @@ function frame() {
         if (downs.length) {                       // spacecraft -> Earth: crawls far out, glides in
           const tl = mod(sec + i * tab.T / n + d.dish.length * 1.7, tab.T);
           const fl = d.target === 'VGR1' ? 0.35 + 0.65 * Math.abs(Math.sin(sec * 2.3 + i)) : 1;
-          pulse(q, sAt(tab, tl), -1, '255,190,120', strength * fl * A, streak(tl));
+          pulse(q, sAt(tab, tl), -1, '255,190,120', strength * fl * A, streak(tl), sec);
         }
         if (ups.length && i === 0) {              // Earth -> spacecraft: the same journey, reversed
           const tl = mod(sec * 0.9 + tab.T * 0.5, tab.T);
-          pulse(q, sAt(tab, tab.T - tl), 1, '130,225,255', 0.7 * A, streak(tab.T - tl) * 0.8);
+          pulse(q, sAt(tab, tab.T - tl), 1, '130,225,255', 0.7 * A, streak(tab.T - tl), sec);
         }
       }
     }
     ctx.restore();
   }
   ctx.globalAlpha = 1;
+
+  // ---- events: a ring radiates from the dish and the spacecraft when a conversation starts (warm) or ends (cool)
+  if (params.has('ripples') && mod(sec, 6) < dt && LINKS.size) {          // ?ripples : demo, one every 6 s
+    const Ls = [...LINKS.values()], L = Ls[Math.floor(sec / 6) % Ls.length];
+    RIPPLES.push({ kind: Math.floor(sec / 6) % 3 ? 'start' : 'end', station: L.station, target: L.target, t0: sec });
+  }
+  for (let i = RIPPLES.length - 1; i >= 0; i--) {
+    const e = RIPPLES[i], tau = sec - e.t0;
+    if (tau > 4) { RIPPLES.splice(i, 1); continue; }
+    const rgb = e.kind === 'start' ? '255,205,150' : '150,175,230';
+    const spots = [pos[e.target], stPos[e.station] && !stPos[e.station].hidden ? stPos[e.station].pt : null];
+    for (const P of spots) {
+      if (!P) continue;
+      for (const lag of [0, 0.7, 1.4]) {
+        const tt = tau - lag; if (tt < 0 || tt > 3) continue;
+        ctx.lineWidth = 1.4 - 0.35 * lag; ctx.strokeStyle = `rgba(${rgb},${0.75 * (1 - tt / 3) ** 2})`;
+        ctx.beginPath(); ctx.arc(P[0], P[1], 4 + tt * 17, 0, 6.283); ctx.stroke();
+      }
+      if (tau < 1) glow(P[0], P[1], 14, rgb, 0.5 * (1 - tau));
+    }
+  }
 
   // ---- sky objects
   const linked = new Set([...LINKS.values()].filter(L => L.want).map(L => L.target));
