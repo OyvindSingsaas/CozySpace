@@ -17,10 +17,30 @@
   #snd.wait { animation: breathe 2.4s ease-in-out infinite; }
   @keyframes breathe { 50% { opacity:.95; border-color:rgba(255,210,160,.6); } }
   #snd svg { width:16px; height:16px; display:block; margin:auto; }
+  #inf { position:fixed; top:22px; right:66px; width:34px; height:34px; border-radius:17px; border:1px solid rgba(160,165,215,.25);
+         background:rgba(12,14,36,.45); color:#a0a5d7; cursor:pointer; opacity:.45; transition:opacity .3s, border-color .3s; padding:0;
+         font:italic 500 15px/32px Georgia, serif; }
+  #inf:hover { opacity:.95; }
+  #inf.on { opacity:.75; border-color:rgba(190,200,255,.45); color:#dfe3ff; }
+  #story { position:fixed; right:24px; bottom:24px; width:300px; max-width:calc(100vw - 48px); box-sizing:border-box;
+           padding:14px 16px 13px; border-radius:12px; border:1px solid rgba(170,175,230,.16);
+           background:rgba(10,12,32,.62); backdrop-filter:blur(6px); -webkit-backdrop-filter:blur(6px);
+           color:rgba(225,226,245,.82); font:400 12px/1.5 'Space Grotesk', system-ui, sans-serif;
+           opacity:0; transform:translateY(6px); transition:opacity .45s, transform .45s; pointer-events:none; }
+  #story.show { opacity:1; transform:none; }
+  #story h3 { margin:0 0 2px; font-weight:500; font-size:14px; color:rgba(240,238,255,.95); letter-spacing:.01em; }
+  #story .meta { color:rgba(170,175,215,.75); font-size:11px; margin-bottom:8px; }
+  #story p { margin:0; }
+  #story ul { margin:7px 0 0; padding:0; list-style:none; color:rgba(200,203,235,.72); font-size:11.5px; }
+  #story li { padding-left:12px; position:relative; margin-top:3px; }
+  #story li::before { content:''; position:absolute; left:2px; top:.62em; width:3px; height:3px; border-radius:2px; background:rgba(255,210,160,.7); }
+  #story .now { margin-top:9px; padding-top:7px; border-top:1px solid rgba(170,175,230,.12); color:rgba(255,214,170,.8); font-size:11px; }
 </style>
 </head>
 <body>
 <canvas id="c"></canvas>
+<button id="inf" title="stories" aria-label="toggle stories">i</button>
+<div id="story"></div>
 <button id="snd" title="sound" aria-label="toggle sound"><svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.8" stroke-linecap="round" stroke-linejoin="round">
   <path d="M4 9v6h4l5 4V5L8 9H4z"/><path class="w1" d="M16.5 8.5a5 5 0 0 1 0 7"/><path class="w2" d="M19 6a8.5 8.5 0 0 1 0 12"/><path class="x" d="M17 9l5 6M22 9l-5 6" style="display:none"/></svg></button>
 
@@ -28,7 +48,8 @@
 <script src="https://cdn.jsdelivr.net/npm/topojson-client@3.1.0/dist/topojson-client.min.js"></script>
 <script src="https://cdn.jsdelivr.net/npm/satellite.js@5.0.0/dist/satellite.min.js"></script>
 <script src="../data/sounds.js"></script><!-- Golden Record clips etc., from scripts/pack_sounds.py (optional) -->
-<script src="../data/ephemeris.js"></script><!-- JPL Horizons, from scripts/fetch_ephemeris.py (optional: formulas are the fallback) -->
+<script src="../data/ephemeris.js"></script>
+<script src="../data/stories.js"></script><!-- the short stories in the hover box --><!-- JPL Horizons, from scripts/fetch_ephemeris.py (optional: formulas are the fallback) -->
 <script>
 // ======================= data (static snapshot; later the live feed) =======================
 const SNAP = [{"station":"Goldstone","dish":"DSS14","target":"DSN","signals":[]},{"station":"Goldstone","dish":"DSS25","target":"ESCG","signals":[{"dir":"up","rate":0,"power":0.2},{"dir":"down","rate":8000,"power":-120}]},{"station":"Goldstone","dish":"DSS26","target":"JWST","signals":[]},{"station":"Goldstone","dish":"DSS23","target":"MMS2","signals":[]},{"station":"Madrid","dish":"DSS55","target":"DSN","signals":[]},{"station":"Madrid","dish":"DSS54","target":"MSL","signals":[]},{"station":"Madrid","dish":"DSS63","target":"STA","signals":[{"dir":"up","rate":0,"power":10},{"dir":"down","rate":720000,"power":-120}]},{"station":"Madrid","dish":"DSS53","target":"LRO","signals":[]},{"station":"Madrid","dish":"DSS56","target":"SOHO","signals":[{"dir":"up","rate":0,"power":0.1},{"dir":"down","rate":245800,"power":-110}]},{"station":"Madrid","dish":"DSS65","target":"KPLO","signals":[{"dir":"up","rate":0,"power":0.2},{"dir":"down","rate":8192,"power":-110}]},{"station":"Canberra","dish":"DSS43","target":"VGR1","signals":[{"dir":"down","rate":159.4,"power":-170}]},{"station":"Canberra","dish":"DSS35","target":"WIND","signals":[{"dir":"up","rate":0,"power":0.2},{"dir":"down","rate":6400,"power":-130},{"dir":"down","rate":73510,"power":-130}]},{"station":"Canberra","dish":"DSS34","target":"SPP","signals":[{"dir":"up","rate":0,"power":18},{"dir":"down","rate":397500,"power":-140}]},{"station":"Canberra","dish":"DSS36","target":"ACE","signals":[{"dir":"up","rate":0,"power":0.1},{"dir":"down","rate":0,"power":-120}]}];
@@ -42,8 +63,8 @@ const HOME = {
   MARS: ['MRO', 'MVN', 'M20', 'MSL', 'ODY', 'TGO', 'MEX', 'EMM', 'M01O'],
   JUP:  ['JNO'],
   L1:   ['SOHO', 'ACE', 'WIND', 'DSCO', 'IMAP', 'AL1', 'SWFO', 'CARR'],
-  L2:   ['JWST', 'EUCL', 'GAIA', 'SPHX', 'PLAT', 'RST'],
-  EARTH:['MMS1', 'MMS2', 'MMS3', 'MMS4', 'CHDR', 'TESS', 'GTL', 'XMM', 'IBEX', 'TDR', 'NSYT'],
+  L2:   ['JWST', 'EUCL', 'GAIA', 'PLAT', 'RST'],
+  EARTH:['SPHX', 'MMS1', 'MMS2', 'MMS3', 'MMS4', 'CHDR', 'TESS', 'GTL', 'XMM', 'IBEX', 'TDR', 'NSYT'],
 };
 const NOT_CRAFT = new Set(['DSN', 'DSS', '']);        // maintenance / testing placeholders in the feed
 const homeOf = k => Object.keys(HOME).find(h => HOME[h].includes(k));
@@ -130,7 +151,8 @@ async function pollLaunches() {
       const [rocket, mission] = x.name.split('|').map(z => z.trim());
       return { id: x.id, t0: Date.parse(x.net), status: x.status?.abbrev || '', precise: ['Second', 'Minute'].includes(x.net_precision?.name),
                rocket, mission: mission || '', where: x.pad.location?.name?.split(',').slice(-1)[0].trim() || '',
-               ll: [+x.pad.longitude, +x.pad.latitude], polar: ['PO', 'SSO'].includes(x.mission?.orbit?.abbrev) };
+               ll: [+x.pad.longitude, +x.pad.latitude], polar: ['PO', 'SSO'].includes(x.mission?.orbit?.abbrev),
+               by: x.launch_service_provider?.name || '', orbit: x.mission?.orbit?.name || '', about: x.mission?.description || '', pad: x.pad.name || '' };
     });
   } catch (e) { /* keep what we have */ }
   setTimeout(pollLaunches, 30 * 60 * 1000);
@@ -1302,6 +1324,7 @@ function render() {
     S[k] = { kind: 'craft', d: S[par].d, lam: S[par].lam, parent: par };
   }
   const sunAng = TH.SUN;
+  SPOTS.length = 0;
   const p = makeProjection(s, sunAng), path = d3.geoPath(p, ctx);
   ctx.setTransform(DPR, 0, 0, DPR, 0, 0);
 
@@ -1431,6 +1454,7 @@ function render() {
           prev = P; }
         const P = at(L, tau), P0 = at(L, Math.max(0, tau - 0.01));
         if (P.vis) {
+          SPOTS.push({ key: 'launch:' + L.id, x: P.x, y: P.y, launch: L });
           const dir = Math.atan2(P.y - P0.y, P.x - P0.x), fl = 0.7 + 0.3 * Math.sin(sec * 31) * Math.sin(sec * 17);
           if (age < 4) glow(at(L, 0).x, at(L, 0).y, 10 * (1 - age / 4), '255,220,170', 0.7);                    // lift-off flash
           glow(P.x - Math.cos(dir) * 2, P.y - Math.sin(dir) * 2, 5 + 2 * fl, '255,170,80', 0.6 * fl);            // flame
@@ -1477,7 +1501,7 @@ function render() {
         if (lit) glow(P.x, P.y, 16, '255,240,210', 0.35 + 0.15 * Math.sin(sec * 2));
         const q1 = issAt(t - 20000), P1 = q1 && lift(q1.ll, q1.h);                 // direction of flight on screen
         const heading = P1 ? Math.atan2(P.y - P1.y, P.x - P1.x) : 0;
-        drawISS(P.x, P.y, heading + Math.PI / 2, lit);                                         // modules along the flight path, truss across it
+        drawISS(P.x, P.y, heading + Math.PI / 2, lit); SPOTS.push({ key: 'ISS', x: P.x, y: P.y });                                         // modules along the flight path, truss across it
         const ux = P.x - cx, uy = P.y - cy, ul = Math.hypot(ux, uy) || 1;
         ctx.font = FONT(10); ctx.fillStyle = 'rgba(225,226,245,0.8)'; ctx.textAlign = ux < 0 ? 'right' : 'left';
         ctx.fillText('ISS', P.x + ux / ul * 20 + (ux < 0 ? -4 : 4), P.y + uy / ul * 20 + 3); ctx.textAlign = 'left';
@@ -1750,6 +1774,7 @@ function render() {
 
   drawArecibo(sec);
   drawGoldenRecord(sec, pos);
+  storyHover(S, pos, t);
 
   // ---- hover: names for the natural world
   if (MOUSE.on) {
@@ -1777,6 +1802,57 @@ function render() {
   }
 
 }
+// ---- stories: hovering a spacecraft, the ISS or a rising rocket tells its short story in a box, lower right
+const SPOTS = [];
+const STORY = { el: document.getElementById('story'), key: null, on: (() => { try { return localStorage.getItem('cozyspace.stories') !== 'off'; } catch (e) { return true; } })(), left: 0 };
+const esc = x => String(x).replace(/[&<>"]/g, c => ({ '&': '&amp;', '<': '&lt;', '>': '&gt;', '"': '&quot;' }[c]));
+function storyHTML(key, S, t) {
+  const sp = SPOTS.find(o => o.key === key);
+  if (sp && sp.launch) {                                      // a rocket: the story comes with the launch data
+    const L = sp.launch, mins = Math.max(0, Math.round((t - L.t0) / 60000));
+    return `<h3>${esc(L.mission || L.rocket)}</h3><div class="meta">${esc(L.rocket)}${L.by ? ' · ' + esc(L.by) : ''}</div>`
+      + (L.about ? `<p>${esc(L.about.length > 320 ? L.about.slice(0, 317).replace(/\s+\S*$/, '') + '…' : L.about)}</p>` : '')
+      + `<div class="now">lifted off ${mins} min ago${L.pad ? ' from ' + esc(L.pad) : ''}${L.orbit ? ' · bound for ' + esc(L.orbit.toLowerCase()) : ''}</div>`;
+  }
+  const st = (window.STORIES || {})[key];
+  const name = st ? st.name : nameOf(key);
+  let h = `<h3>${esc(name)}</h3>`;
+  if (st) {
+    h += `<div class="meta">launched ${esc(st.launched)} · ${esc(st.by)}</div><p>${esc(st.text)}</p>`;
+    if (st.facts && st.facts.length) h += '<ul>' + st.facts.map(f => `<li>${esc(f)}</li>`).join('') + '</ul>';
+  } else h += '<div class="meta">no story yet</div>';
+  // right now
+  const now = [];
+  if (S[key] && S[key].d) now.push(lightTime(S[key].d) + ' away at the speed of light');
+  const ds = DISHES.filter(d => d.target === key && d.signals.length);
+  if (ds.length) { const d = ds[0], dn = d.signals.find(x => x.dir === 'down');
+    now.push(`${d.station.toLowerCase()} ${dn ? 'is listening' + (dn.rate ? ` · ${dn.rate >= 1e6 ? (dn.rate / 1e6).toFixed(1) + ' Mbit/s' : dn.rate >= 1e3 ? (dn.rate / 1e3).toFixed(1) + ' kbit/s' : Math.round(dn.rate) + ' bit/s'}` : '') : 'is calling'}`); }
+  if (now.length) h += `<div class="now">${esc(now.join(' · '))}</div>`;
+  return h;
+}
+function storyHover(S, pos, t) {
+  let hit = null, best = 16;
+  if (STORY.on && MOUSE.on) {
+    for (const [k, v] of Object.entries(S)) if (v.kind === 'craft' && pos[k]) {
+      const dd = Math.hypot(pos[k][0] - MOUSE.x, pos[k][1] - MOUSE.y); if (dd < best) { best = dd; hit = k; } }
+    for (const o of SPOTS) { const dd = Math.hypot(o.x - MOUSE.x, o.y - MOUSE.y); if (dd < best) { best = dd; hit = o.key; } }
+  }
+  const el = STORY.el;
+  if (hit) {
+    STORY.left = 0;
+    const html = storyHTML(hit, S, t);
+    if (hit !== STORY.key || html !== STORY.html) { el.innerHTML = html; STORY.html = html; STORY.key = hit; }
+    el.classList.add('show');
+  } else if (STORY.key) {                                     // linger a moment after the pointer leaves
+    if (!STORY.left) STORY.left = t;
+    if (t - STORY.left > 1200) { el.classList.remove('show'); STORY.key = null; }
+  }
+}
+function paintInf() { document.getElementById('inf').classList.toggle('on', STORY.on); }
+document.getElementById('inf').addEventListener('click', e => { e.stopPropagation(); STORY.on = !STORY.on; paintInf();
+  try { localStorage.setItem('cozyspace.stories', STORY.on ? 'on' : 'off'); } catch (er) {} });
+paintInf();
+
 const MOUSE = { x: 0, y: 0, on: false };
 addEventListener('mousemove', e => { MOUSE.x = e.clientX; MOUSE.y = e.clientY; MOUSE.on = true; });
 document.addEventListener('mouseleave', () => { MOUSE.on = false; });

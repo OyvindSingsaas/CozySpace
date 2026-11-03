@@ -81,6 +81,7 @@ light-travel times, and all generated sound.
 | File | What | How it's made |
 |---|---|---|
 | `data/ephemeris.js` | Directions and distances of planets and spacecraft, a year at 2-day steps, interpolated to now | `python3 scripts/fetch_ephemeris.py` (JPL Horizons). Re-run every few months |
+| `data/stories.js` | The short spacecraft stories for the hover box | Written by hand |
 | `data/sounds.js` | The audio clips, packed into a script | `python3 scripts/pack_sounds.py` (needs ffmpeg) |
 | `images/golden-record-engraving.png` | Golden Record cover, engraved lines only | Extracted from NASA's photo, `images/voyager-golden-record-cover.webp` |
 | `data/dsn_log.csv` | A day of DSN polling, for studying pacing (not used by the page) | `python3 scripts/log_dsn.py` |
@@ -108,6 +109,10 @@ and Oort cloud distances.
 | Arecibo message building in space, bit by bit (10 bit/s) | Hovering the radio ring |
 
 Natural objects show only their light-time; hover for the name. Spacecraft are always named.
+
+Hover a spacecraft, the ISS or a rising rocket and a small box in the lower right tells its story: when and how it
+launched, who flies it, what it's for, a fact or two, and what it's doing right now (light-time, which dish is listening).
+The stories live in `data/stories.js` (easy to edit); rockets take theirs from Launch Library. The **i** button turns the box off.
 
 ## Transmitting and receiving
 
