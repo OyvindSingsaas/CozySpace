@@ -813,14 +813,16 @@ const sparkColour = c => { const f = Math.min(0.999, c) * (SPARK_COLOURS.length 
 function flareDance(x, y, fx, fy, F, sec) {
   const dt = Math.min(0.2, sec - (flareDance.last ?? sec)); flareDance.last = sec;
   const L = F ? Math.max(0, F.lvl) : 0, k = F ? F.strength : 0;
-  let base = Math.atan2(fy - y, fx - x);
-  if (Math.hypot(fx - x, fy - y) < SUN_R * 0.3) base = sec * 0.2;               // a flare at disc centre sprays every way, slowly turning
+  // direction: outward from the region. a region near the limb throws to that side (±55°); one near disc centre
+  // faces Earth, so its eruption comes at us and, seen from here, blooms all round the Sun (a "halo")
+  const q = Math.min(1, Math.hypot(fx - x, fy - y) / SUN_R);
+  const base = q > 0.02 ? Math.atan2(fy - y, fx - x) : 0, spread = Math.PI * (1 - q) + 0.96 * q;
   // emit
   if (F) {
     const rate = k * 2.5 * 2.6 ** Math.min(3.5, L);
     let n = Math.floor(rate * dt + Math.random());
     while (n-- > 0 && SPARKS.length < 500) SPARKS.push({
-      x: fx, y: fy, trail: [], a: base + (Math.random() - 0.5) * 2.0,
+      x: fx, y: fy, trail: [], a: base + (Math.random() * 2 - 1) * spread,
       v: (9 + Math.random() * 14) * (1 + 0.45 * L), age: 0, life: (3 + Math.random() * 3) * (1 + 0.25 * L),
       curl: (Math.random() - 0.5) * 1.6, wob: 0.6 + Math.random() * 0.8, f: 1.6 + Math.random() * 2.2, w: Math.random() * 6.28 });
   }
