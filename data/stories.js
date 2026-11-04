@@ -35,6 +35,8 @@ window.STORIES = {
   CARR: { name: 'Carruthers', launched: '24 Sep 2025 · Falcon 9', by: 'NASA / Univ. of Illinois',
     text: 'Photographs Earth’s exosphere, the faint ultraviolet glow of hydrogen that reaches far beyond the Moon’s orbit.',
     facts: ['Named after George Carruthers, whose ultraviolet camera Apollo 16 set up on the Moon'] },
+  ORX: { name: 'OSIRIS-APEX', launched: '8 Sep 2016 · Atlas V', by: 'NASA / Univ. of Arizona',
+    text: 'As OSIRIS-REx it grabbed a sample of the asteroid Bennu in 2020 and dropped it off over Utah on 24 Sep 2023. Now renamed, it is on its way to the asteroid Apophis, arriving just after Apophis skims past Earth in April 2029.' },
   SWFO: { name: 'SWFO-L1', launched: '24 Sep 2025 · Falcon 9', by: 'NOAA',
     text: 'An operational space-weather station at L1, built to watch for solar eruptions heading our way.' },
   AL1: { name: 'Aditya-L1', launched: '2 Sep 2023 · PSLV', by: 'ISRO (India)',
@@ -109,7 +111,7 @@ window.STORIES = {
     text: 'Landed in Jezero Crater, an ancient river delta, on 18 Feb 2021. It collects rock samples for a future return to Earth.',
     facts: ['Brought the Ingenuity helicopter: the first powered flight on another world, 19 Apr 2021', 'Its microphone recorded the Mars sound you hear here'] },
   JNO: { name: 'Juno', launched: '5 Aug 2011 · Atlas V', by: 'NASA / JPL / SwRI',
-    text: 'Reached Jupiter on 4 Jul 2016 and spent years diving low over its poles, looking beneath the clouds and into the planet’s interior.',
+    text: 'Orbiting Jupiter since 4 Jul 2016, diving low over its poles to look beneath the clouds and into the planet’s interior.',
     facts: ['Solar-powered at five times Earth’s distance from the Sun', 'Carries three LEGO figures: Galileo, Jupiter and Juno'] },
   EURC: { name: 'Europa Clipper', launched: '14 Oct 2024 · Falcon Heavy', by: 'NASA / JPL',
     text: 'The largest planetary spacecraft NASA has built, heading for Jupiter’s ocean moon Europa. Arrives in 2030 for dozens of close flybys.',
@@ -132,3 +134,4 @@ window.STORIES = {
 };
 // the four MMS spacecraft share one story
 for (const k of ['MMS1', 'MMS2', 'MMS3', 'MMS4']) window.STORIES[k] = window.STORIES.MMS;
+window.STORIES.CGO = window.STORIES.CARR;   // the feed calls Carruthers CGO
