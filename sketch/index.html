@@ -184,13 +184,16 @@ function ingest(list, quiet = false) {
   DISHES = list;
   const before = new Set([...LINKS].filter(([, L]) => L.want).map(([k]) => k));
   const prevTarget = Object.fromEntries((ingest.prev || []).map(d => [d.dish, d.target])); ingest.prev = list;
-  for (const L of LINKS.values()) L.want = 0;
+  // the feed often drops a link for a minute or three and then shows it again (seen 15 times in a day's log). a link
+  // that goes missing is kept for a grace period, so a blip doesn't end the contact or fire end/start ripples
+  const nowS = Date.now() / 1000, GRACE = 150, seen = new Set();
   for (const d of list) {
     if (!d.signals.length || !d.target || NOT_CRAFT.has(d.target)) continue;
     const key = d.dish + '|' + d.target, isNew = !LINKS.has(key), L = LINKS.get(key) || { alpha: 0 };
-    if (isNew && !quiet) L.fresh = true;          // a contact that starts while we watch: its first packet sets out now
-    LINKS.set(key, Object.assign(L, d, { want: 1 }));
+    if (isNew && !quiet) L.fresh = true;          // a contact that starts while we watch
+    LINKS.set(key, Object.assign(L, d, { want: 1, lastSeen: nowS })); seen.add(key);
   }
+  for (const [k, L] of LINKS) if (!seen.has(k)) L.want = !quiet && L.want && nowS - (L.lastSeen ?? 0) < GRACE ? 1 : 0;
   if (quiet) return;
   const t0 = (Date.now() - T0) / 1000;
   for (const d of list) if (prevTarget[d.dish] !== undefined && prevTarget[d.dish] !== d.target)
@@ -634,6 +637,7 @@ function dest([lon, lat], brg, dist) {
 // real light-time, or the time needed at the screen speed limit, whichever is longer
 const VPX = +params.get('vmax') || 120, TABLES = new Map();
 const BITS_PER_PACKET = 8e6 * (+params.get('mb') || 1), MIN_GAP = 2, UPLINK_EVERY = 300;   // 1 packet = 1 MB
+const CARRIER = 15;                                   // s between the faint carrier pulses on every live link
 function travelBin(bin, lb) {                // lb: the on-screen path length, in 5% steps
   const key = bin + '|' + lb;
   if (TABLES.has(key)) return TABLES.get(key);
@@ -681,11 +685,11 @@ function qAtS(q, s) {                         // the point a fraction s of the w
   let lo = 0, hi = 48; while (hi - lo > 1) { const m = (lo + hi) >> 1; if (c[m] <= x) lo = m; else hi = m; }
   return qAt(q, (lo + (x - c[lo]) / ((c[hi] - c[lo]) || 1)) / 48);
 }
-function pulse(q, u, dirSign, rgb, a, vpx, sec) {
+function pulse(q, u, dirSign, rgb, a, vpx, sec, size = 1) {
   if (a < 0.01) return;
-  const L = qLen(q) || 1, half = 6 / L;                        // ~12 px long
+  const L = qLen(q) || 1, half = 6 * size / L;                 // ~12 px long
   const cycles = Math.min(6, 1.3 + 1.4 * Math.log10(1 + vpx / 15));   // slow: a lazy swell; fast: a tight buzz
-  const N = 22, amp = 1.6;
+  const N = 22, amp = 1.6 * size;
   let prev = null;
   ctx.lineWidth = 0.9; ctx.lineCap = 'round';
   for (let i = 0; i <= N; i++) {
@@ -697,7 +701,7 @@ function pulse(q, u, dirSign, rgb, a, vpx, sec) {
     if (prev) { ctx.strokeStyle = `rgba(${rgb},${a * env})`; ctx.beginPath(); ctx.moveTo(prev[0], prev[1]); ctx.lineTo(pt[0], pt[1]); ctx.stroke(); }
     prev = pt;
   }
-  const h = qAtS(q, u); glow(h[0], h[1], 5, rgb, a * 0.25);
+  const h = qAtS(q, u); glow(h[0], h[1], 5 * size, rgb, a * 0.25);
 }
 
 // a little deep-space antenna: pedestal, tilted parabolic bowl, feed struts, blinking activity light
@@ -1655,6 +1659,23 @@ function render() {
           const v = Math.abs(u - sAt(tab, Math.min(tab.T, tl + 0.1))) / 0.1 * Lp;   // screen speed, px/s
           const fl = d.target === 'VGR1' ? 0.4 + 0.6 * Math.abs(Math.sin(sec * 2.3 + E.times[k])) : 1;
           pulse(q, u, dir, rgb, a0 * fl * crowd * Math.max(0, gone), v, sec);
+        }
+        // the carrier: a faint pulse every CARRIER seconds, shown where they're far enough apart to read (near Earth;
+        // farther out, where the log scale slows light down, they merge into the line). downlink counts time to
+        // arrival, uplink time since departure; a new uplink only has what has left the dish since contact began
+        E.carT0 ??= dir > 0 && d.fresh ? tnow : -Infinity;
+        if (dir > 0) { if (!d.want) E.carEnd ??= tnow; else E.carEnd = undefined; }
+        let prevC = null;
+        for (let a = mod(dir < 0 ? -tnow : tnow, CARRIER) || CARRIER, n = 0; a < tab.T && n < 60; a += CARRIER, n++) {
+          if (dir > 0 && a > tnow - E.carT0) break;
+          if (dir > 0 && E.carEnd !== undefined && a < tnow - E.carEnd) continue;   // an ended uplink sends no more
+          const u = sAt(tab, tab.T - a);
+          if (prevC !== null) { const gp = Math.abs(u - prevC) * Lp; if (gp < 14) break;
+            const cf = Math.min(1, (gp - 14) / 30);
+            const v = Math.abs(u - sAt(tab, Math.max(0, tab.T - a - 0.1))) / 0.1 * Lp;
+            pulse(q, u, dir, rgb, a0 * 0.32 * cf * Math.max(0, gone), v, sec, 0.6); }
+          else { const v = Math.abs(u - sAt(tab, Math.max(0, tab.T - a - 0.1))) / 0.1 * Lp; pulse(q, u, dir, rgb, a0 * 0.32 * Math.max(0, gone), v, sec, 0.6); }
+          prevC = u;
         }
       }
     }

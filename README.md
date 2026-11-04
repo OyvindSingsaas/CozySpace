@@ -96,8 +96,9 @@ and Oort cloud distances.
 | Event / element | Driven by |
 |---|---|
 | Wave packets travelling along each link: amber down (spacecraft to Earth), blue up | DSN data rate: 1 packet = 1 MB; uplinks one every 5 min. Real light speed, capped at 120 px/s on screen |
+| Faint carrier pulses on every live link, every 15 s, so slow links still hum | Link is live |
 | Dishes appearing, slewing and turning away | DSN dish assignments and az/el; real slew rates |
-| Ripples at dish and spacecraft when a link starts (warm) or ends (cool) | DSN |
+| Ripples at dish and spacecraft when a link starts (warm) or ends (cool) | DSN; a link that drops out of the feed for under 2½ min counts as continuous |
 | The Sun flaring: sparks and loops sized by class (B, C, M, X) | GOES X-ray flux |
 | Sunspots | NOAA active regions |
 | Aurora breathing around both poles | OVATION nowcast |
