@@ -16,7 +16,11 @@ OBJECTS = {  # page key -> Horizons COMMAND
     "MERC": "199", "VENUS": "299", "MARS": "499", "JUP": "599", "SAT": "699", "URA": "799", "NEP": "899", "PLU": "999",
     "VGR1": "-31", "VGR2": "-32", "NHPC": "-98", "SPP": "-96", "STA": "-234", "SOHO": "-21", "ACE": "-92",
     "WIND": "-8", "DSCO": "-78", "JWST": "-170", "EUCL": "-680", "JNO": "-61", "EURC": "-159", "JUCE": "-28",
-    "PSYC": "-255", "LUCY": "-49", "BEPI": "-121", "SOLO": "-144",
+    "PSYC": "-255", "LUCY": "-49", "BEPI": "-121", "SOLO": "-144", "ORX": "-64",
+    # comets (small bodies: DES = designation, CAP = the apparition closest to now)
+    "C_HALLEY": "DES=1P;CAP;NOFRAG;", "C_HALEBOPP": "DES=C/1995 O1;", "C_3I": "DES=C/2025 N1;",
+    "C_SWIFTTUTTLE": "DES=109P;CAP;NOFRAG;", "C_TEMPELTUTTLE": "DES=55P;CAP;NOFRAG;", "C_ENCKE": "DES=2P;CAP;NOFRAG;",
+    "C_67P": "DES=67P;CAP;NOFRAG;",
 }
 
 def get(url):

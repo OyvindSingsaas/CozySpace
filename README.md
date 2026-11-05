@@ -101,6 +101,7 @@ and Oort cloud distances.
 | Ripples at dish and spacecraft when a link starts (warm) or ends (cool) | DSN; a link that drops out of the feed for under 2½ min counts as continuous |
 | The Sun flaring: sparks and loops sized by class (B, C, M, X) | GOES X-ray flux |
 | Sunspots | NOAA active regions |
+| Famous comets (Halley, Hale–Bopp, 3I/ATLAS, Swift–Tuttle, Tempel–Tuttle, Encke, 67P): a coma and a tail pointing away from the Sun when within ~5 AU of it | JPL Horizons, via `data/ephemeris.js` |
 | Aurora breathing around both poles | OVATION nowcast |
 | ISS crossing the globe | TLE + SGP4 |
 | A small rocket climbing (shown at 5x altitude) for about 9 min, then a pulse at orbit | Launch Library 2 |

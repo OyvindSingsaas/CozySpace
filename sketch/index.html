@@ -277,6 +277,16 @@ const MERC = planet(252.25, 4.0923344, 0.3871), VENUS = planet(181.98, 1.6021302
       URA = planet(313.23, 0.0117258, 19.19),    NEP = planet(304.88, 0.0059810, 30.07),
       PLU = planet(238.9, 0.0039757, 39.48);     // Pluto: mean motion; true heliocentric distance in 2026 is ~35 AU (approx)
 
+// famous comets, natural objects like the planets: light-time on screen, name on hover. positions from the ephemeris
+const COMETS = {
+  C_HALLEY: 'halley\'s comet · back in 2061',
+  C_HALEBOPP: 'hale–bopp · the great comet of 1997',
+  C_3I: '3I/ATLAS · a visitor from another star, leaving for good',
+  C_SWIFTTUTTLE: 'swift–tuttle · parent of the perseids',
+  C_TEMPELTUTTLE: 'tempel–tuttle · parent of the leonids',
+  C_ENCKE: 'encke · parent of the taurids, round the sun every 3.3 years',
+  C_67P: '67P · rosetta\'s comet',
+};
 function sky(t, s) {
   const n = s.n, ls = s.lam, le = ls + 180;
   const days = (t - Date.parse('2026-11-14T00:00Z')) / 864e5;   // ~1 light-day mid-Nov 2026 (approx)
@@ -304,6 +314,7 @@ function sky(t, s) {
     NHPC: { kind: 'craft', lam: 287,   d: 66 * AU },             // New Horizons
   };
   for (const [k, v] of Object.entries(S)) { const e = eph(k, t); if (e) Object.assign(v, e); }   // real positions where we have them
+  for (const [k, c] of Object.entries(COMETS)) { const e = eph(k, t); if (e) S[k] = { kind: 'comet', ...e, label: c }; }   // only with ephemeris data
   return S;
 }
 
@@ -1729,6 +1740,22 @@ function render() {
       drawPlanet(k, x, y, lit, [sd[0] / sl, sd[1] / sl]);
       const PR = PLANET_LOOK[k]?.r || v.r;
       labels.push({ x, y, r: PR * (k === 'SAT' ? 2.2 : 1) + 3, name: v.label, sub: lightTime(v.d), main: true });
+    } else if (v.kind === 'comet') {
+      // a comet: a small icy nucleus; near the Sun (inside ~5 AU) a coma and a tail pointing away from the Sun
+      const P = [v.d * Math.cos(v.lam * RAD), v.d * Math.sin(v.lam * RAD)], Sv = [AU * Math.cos(s.lam * RAD), AU * Math.sin(s.lam * RAD)];
+      const rh = Math.hypot(P[0] - Sv[0], P[1] - Sv[1]) / AU, act = Math.max(0, Math.min(1, (5 - rh) / 4));
+      const ax = x - pos.SUN[0], ay = y - pos.SUN[1], al = Math.hypot(ax, ay) || 1, ux = ax / al, uy = ay / al;
+      if (act > 0) {
+        const len = 8 + 60 * act * act, w = 1 + 3 * act;
+        const g = ctx.createLinearGradient(x, y, x + ux * len, y + uy * len);
+        g.addColorStop(0, `rgba(170,215,255,${0.35 * act})`); g.addColorStop(1, 'rgba(170,215,255,0)');
+        ctx.fillStyle = g; ctx.beginPath(); ctx.moveTo(x - uy * w, y + ux * w);
+        ctx.quadraticCurveTo(x + ux * len * 0.5 - uy * w * 1.6, y + uy * len * 0.5 + ux * w * 1.6, x + ux * len, y + uy * len);
+        ctx.quadraticCurveTo(x + ux * len * 0.5 + uy * w * 1.6, y + uy * len * 0.5 - ux * w * 1.6, x + uy * w, y - ux * w); ctx.fill();
+        glow(x, y, 4 + 6 * act, '190,225,255', 0.25 + 0.3 * act);
+      }
+      dot(x, y, 1.3, 'rgba(215,232,255,0.85)');
+      labels.push({ x, y, r: 6, name: v.label, sub: lightTime(v.d), main: true });
     } else {
       const on = linked.has(k), ap = S0X[k] === undefined ? appear(k) : 1;   // catalogue craft are always there; feed-only ones fade in/out
       ctx.globalAlpha = ap;
